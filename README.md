@@ -8,7 +8,7 @@
 
 ## 무엇을 다운로드하나요?
 
-1. 오른쪽의 **Releases**에서 최신 릴리스를 엽니다.
+1. 오른쪽의 **Releases** 또는 [다운로드 페이지](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases)를 엽니다.
 2. Assets에서 `HWPExamAssembler-v0.1.0-alpha-windows-portable.zip`을 받습니다.
 3. GitHub가 자동으로 제공하는 `Source code (zip)`은 실행 프로그램이 아니므로 받지 않아도 됩니다.
 4. ZIP 파일을 **완전히 압축 해제**한 뒤, 폴더 안의 `HWPExamAssembler.exe`를 실행합니다.
@@ -69,4 +69,3 @@ HWPExamAssembler 자체는 다음 기능을 사용하지 않습니다.
 ## 배포 형태
 
 이 저장소는 사용자를 위한 **배포 전용 저장소**입니다. 실행 파일은 Git 이력에 넣지 않고 GitHub Releases의 ZIP 파일로만 제공합니다. 개발 소스와 시험용 문서는 포함하지 않습니다.
-
