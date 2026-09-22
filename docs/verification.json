@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "ai_json_rule_compared_after_save": true,
+  "ai_json_persisted": true,
+  "native_imported_questions": 2,
+  "declaration_checks": 4,
+  "source_files_unchanged": true,
+  "hwpx_reopen": true,
+  "automated_test_files_passed": 20,
+  "automated_test_files_failed": 0,
+  "skipped_test_files": [
+    "test_algebra23_boundary_actual.py"
+  ],
+  "version": "v0.2.0-alpha",
+  "ui": "Qt format review rendered using synthetic data"
+}

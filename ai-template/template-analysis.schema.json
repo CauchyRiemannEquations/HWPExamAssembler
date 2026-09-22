@@ -1,0 +1,1572 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HWP Exam Template Analysis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "profile_name",
+    "template",
+    "evidence",
+    "rules",
+    "notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hwp-exam-template-analysis"
+    },
+    "version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "profile_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "sha256",
+        "input_kind",
+        "pages_checked"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-fA-F]{64}$"
+        },
+        "input_kind": {
+          "enum": [
+            "native",
+            "pdf",
+            "image",
+            "mixed",
+            "text"
+          ]
+        },
+        "pages_checked": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "location",
+          "quote"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "kind": {
+            "enum": [
+              "instruction_text",
+              "native_property",
+              "visual",
+              "user_description"
+            ]
+          },
+          "location": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "quote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 300,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "role",
+          "property",
+          "scope",
+          "condition",
+          "status",
+          "value",
+          "unit",
+          "confidence",
+          "evidence_ids",
+          "notes"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "role": {
+            "enum": [
+              "number",
+              "body",
+              "passage",
+              "example",
+              "choice",
+              "box",
+              "picture",
+              "table",
+              "page",
+              "header",
+              "footer",
+              "score",
+              "equation",
+              "answer"
+            ]
+          },
+          "property": {
+            "enum": [
+              "font",
+              "font_latin",
+              "size",
+              "line_spacing",
+              "bold",
+              "italic",
+              "character_spacing",
+              "width_ratio",
+              "alignment",
+              "indent",
+              "before",
+              "after",
+              "number_format",
+              "markers",
+              "arrangement",
+              "width",
+              "height",
+              "treat_as_char",
+              "wrap",
+              "horizontal_reference",
+              "vertical_reference",
+              "horizontal_alignment",
+              "vertical_alignment",
+              "horizontal_offset",
+              "vertical_offset",
+              "allow_overlap",
+              "inside_left",
+              "inside_right",
+              "inside_top",
+              "inside_bottom",
+              "outside_left",
+              "outside_right",
+              "outside_top",
+              "outside_bottom",
+              "border_width",
+              "border_style",
+              "columns",
+              "column_gap",
+              "margin_left",
+              "margin_right",
+              "margin_top",
+              "margin_bottom",
+              "orientation"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "all",
+              "objective",
+              "written",
+              "specific"
+            ]
+          },
+          "condition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "status": {
+            "enum": [
+              "explicit",
+              "observed",
+              "inferred",
+              "unknown"
+            ]
+          },
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "none",
+              "pt",
+              "percent",
+              "mm",
+              "count",
+              null
+            ]
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low",
+              "unknown"
+            ]
+          },
+          "evidence_ids": {
+            "type": "array",
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 60
+            }
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "unknown"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "const": null
+                },
+                "unit": {
+                  "const": null
+                },
+                "confidence": {
+                  "const": "unknown"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "evidence_ids": {
+                  "minItems": 1
+                },
+                "confidence": {
+                  "enum": [
+                    "high",
+                    "medium",
+                    "low"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "font"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "font_latin"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "size"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "pt"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "line_spacing"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                "unit": {
+                  "enum": [
+                    "percent",
+                    "pt"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "bold"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "boolean"
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "italic"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "boolean"
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "character_spacing"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -100,
+                  "maximum": 100
+                },
+                "unit": {
+                  "enum": [
+                    "percent"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "width_ratio"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 500
+                },
+                "unit": {
+                  "enum": [
+                    "percent"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "alignment"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "Left",
+                    "Right",
+                    "Center",
+                    "Justify"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "indent"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -200,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm",
+                    "pt"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "before"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm",
+                    "pt"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "after"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm",
+                    "pt"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "number_format"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "markers"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "arrangement"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "single_paragraph",
+                    "multiple_paragraphs",
+                    "single_line",
+                    "multiple_lines"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "width"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0.01,
+                  "maximum": 2000
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "height"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0.01,
+                  "maximum": 2000
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "treat_as_char"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "boolean"
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "wrap"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "TopAndBottom",
+                    "Square",
+                    "InFrontOfText",
+                    "BehindText"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "horizontal_reference"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "Paper",
+                    "Page",
+                    "Column",
+                    "Para"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "vertical_reference"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "Paper",
+                    "Page",
+                    "Para"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "horizontal_alignment"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "Left",
+                    "Center",
+                    "Right"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "vertical_alignment"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "Top",
+                    "Center",
+                    "Bottom"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "horizontal_offset"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -2000,
+                  "maximum": 2000
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "vertical_offset"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": -2000,
+                  "maximum": 2000
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "allow_overlap"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "boolean"
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "inside_left"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "inside_right"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "inside_top"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "inside_bottom"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "outside_left"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "outside_right"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "outside_top"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "outside_bottom"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "border_width"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 20
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "border_style"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "solid",
+                    "dashed",
+                    "dotted",
+                    "double",
+                    "none"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "columns"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
+                },
+                "unit": {
+                  "enum": [
+                    "count"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "column_gap"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "margin_left"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "margin_right"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "margin_top"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "margin_bottom"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 200
+                },
+                "unit": {
+                  "enum": [
+                    "mm"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "property": {
+                  "const": "orientation"
+                },
+                "status": {
+                  "not": {
+                    "const": "unknown"
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200,
+                  "enum": [
+                    "portrait",
+                    "landscape"
+                  ]
+                },
+                "unit": {
+                  "enum": [
+                    "none"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "notes": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    }
+  }
+}
