@@ -1,6 +1,7 @@
 시험지 편집기 공용판 사용 안내
 
-Windows에 설치된 한컴오피스 한글을 준비하세요. 이 안내는 학교 양식 등록과 계정 로그인이 들어 있는 현재 공용판 기준입니다. GitHub Releases의 v0.2.0-alpha는 이전 버전입니다. 새 소스를 실행하는 방법은 README.md에 있습니다.
+한컴오피스 한글이 설치된 Windows PC에서 아래 주소의 HWPExamAssembler-Public.exe를 내려받아 더블클릭하세요. 별도 설치나 압축 해제는 필요 없습니다. 한글이 파일 접근을 물으면 선택한 문서를 확인하고 허용하세요.
+https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/latest/download/HWPExamAssembler-Public.exe
 
 처음 양식을 등록할 때
 

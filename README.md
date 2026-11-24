@@ -2,7 +2,9 @@
 
 교사가 작성한 HWP·HWPX 문항을 학교 시험지 양식에 모으는 Windows 앱입니다. 한글 화면에서 머리말과 유형 안내처럼 남길 부분을 확인하고, 새 문항을 넣을 위치를 등록합니다. 수합본을 옆에 열어 두고 앱에서 순서와 난이도를 편집할 수 있습니다.
 
-**새 양식 등록과 계정 로그인은 이 저장소의 소스에서 실행하거나 빌드해 사용하세요.** 기존 GitHub 다운로드는 v0.2.0-alpha의 Windows 실행 파일입니다. [이전 버전 다운로드 및 체크섬](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/tag/v0.2.0-alpha)
+**[Windows용 최신 공용판 다운로드 (.exe)](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/latest/download/HWPExamAssembler-Public.exe)**
+
+한컴오피스 한글이 설치된 Windows PC에서 내려받은 `HWPExamAssembler-Public.exe`를 더블클릭하세요. Python 설치나 압축 해제는 필요 없습니다. 문서를 열 때 한글이 파일 접근을 물으면 선택한 파일을 확인하고 허용하세요. [릴리스 안내 및 체크섬](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/latest)
 
 ## 처음 사용하는 교사
 
