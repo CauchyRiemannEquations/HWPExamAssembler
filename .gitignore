@@ -3,3 +3,23 @@ release/
 *.exe
 *.zip
 
+
+# Local runtime and build products
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+
+# User-owned documents, local state and provider configuration
+*.hwp
+*.hwpx
+*.sqlite3*
+*.dll
+.env
+.env.*
+google-desktop-client.json
+client_secret*.json
+work/
+logs/
+profiles/

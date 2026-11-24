@@ -1,53 +1,55 @@
-# HWPExamAssembler
+# HWPExamAssembler 공용판
 
-여러 교사가 작성한 HWP/HWPX 시험 문항을 학교 양식에 수합하고 문항 순서·번호·난이도를 편집하는 Windows용 도구입니다. 수식·그림·표·글상자는 한글 Automation의 네이티브 복사·붙여넣기로 옮깁니다.
+교사가 작성한 HWP·HWPX 문항을 학교 시험지 양식에 모으는 Windows 앱입니다. 한글 화면에서 머리말과 유형 안내처럼 남길 부분을 확인하고, 새 문항을 넣을 위치를 등록합니다. 수합본을 옆에 열어 두고 앱에서 순서와 난이도를 편집할 수 있습니다.
 
-현재 배포 버전은 **v0.2.0-alpha**입니다. 결과 시험지는 한글에서 직접 검토해 주세요.
+**새 양식 등록과 계정 로그인은 이 저장소의 소스에서 실행하거나 빌드해 사용하세요.** 기존 GitHub 다운로드는 v0.2.0-alpha의 Windows 실행 파일입니다. [이전 버전 다운로드 및 체크섬](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/tag/v0.2.0-alpha)
 
-## 다운로드와 실행
+## 처음 사용하는 교사
 
-1. [v0.2.0-alpha 다운로드](https://github.com/CauchyRiemannEquations/HWPExamAssembler/releases/tag/v0.2.0-alpha)에서 `HWPExamAssembler-v0.2.0-alpha-windows-portable.zip`을 받습니다.
-2. ZIP을 완전히 압축 해제하고 `HWPExamAssembler.exe`를 실행합니다. 같은 폴더의 `_internal`은 그대로 둡니다.
-3. Windows와 한컴오피스 한글이 필요하며 Python은 설치하지 않아도 됩니다. Windows 11·한글 2022 계열에서 검증했습니다.
+1. Windows에 설치된 한컴오피스 한글을 준비합니다. 공용판 홈에서 **내 학교 양식 선택…**을 누르고 양식 파일을 엽니다.
+2. 항목을 클릭하면 한글 작업 사본에 해당 위치가 표시됩니다. 틀린 범위나 삽입점만 한글에서 다시 짚고 **등록하고 사용**을 누릅니다. 등록한 양식은 다음 수합에서 바로 선택할 수 있습니다.
+3. 교사의 출제 파일들을 추가하고 새 수합본을 저장합니다. 편집 화면에서 문항 순서와 난이도를 바꾼 뒤 **한글에서 확인**으로 결과를 검토합니다.
 
-GitHub의 `Source code (zip)`은 실행 프로그램이 아닙니다. 별도 `AI-template-analysis-v1.zip`에는 분석 프롬프트·JSON 규격·빈 입력 양식·가상 예제가 있습니다. `SHA256SUMS.txt`로 배포 파일 무결성을 확인할 수 있습니다.
+이 과정은 인터넷 연결 없이 이용할 수 있습니다. 복잡한 양식에서 영역 제안을 한 번 더 받고 싶을 때만 **AI로 영역 제안…**을 누릅니다. **보낼 내용 보기**에서 문단 번호와 표·수식·문항 번호 같은 구조 단서를 확인할 수 있습니다. [사용 안내](사용안내.txt) · [문서 및 계정 정보 처리](PRIVACY.md)
 
-## 이번 버전에서 추가한 기능
+| 양식 등록에서 선택 | 사용 방법 |
+| --- | --- |
+| ChatGPT | **ChatGPT로 계속**을 누르고 기본 브라우저에서 로그인합니다. 지원되는 Plus·Pro 계정으로 요금제 사용을 승인하면 영역 제안을 받을 수 있습니다. 교사가 API 키를 만들 필요가 없습니다. [OpenAI 공식 안내](https://developers.openai.com/siwc/quickstart) |
+| Gemini | 기관의 Google 설정을 준비한 PC에서 **Google로 계속**을 누릅니다. 분석에는 연결한 Google Cloud 프로젝트의 Gemini API 할당량이 적용됩니다. [Google 공식 안내](https://ai.google.dev/gemini-api/docs/oauth) |
+| 웹에서 직접 사용 | **웹에서 복사·붙여넣기로 분석**을 선택합니다. 요청을 복사해 ChatGPT 또는 Gemini 대화에 붙여넣고 답변을 앱으로 가져옵니다. |
 
-- 학교 전용판과 같은 **시험지 수합 / 시험지 편집** 시작 화면과 난이도 편집 흐름
-- 학교 양식의 번호·글꼴·글자 크기·줄간격·보기 구성·상자·그림 속성 근거 확인
-- 줄글로 명시된 서식 지시와 실제 예시 비교, 충돌·미해석 항목 표시
-- 개인 AI가 만든 분석 JSON 가져오기, 전체 근거 확인, 비교 기준 선택
-- 43개 기본 점검 항목을 포함한 상세 AI 프롬프트와 원본 서식 근거 내보내기
-- 저장 후 다시 읽은 수합본의 지원 속성을 선택한 기준과 비교
+AI가 제안한 경계는 변경 전후 위치를 확인하고 **제안 적용**을 눌러야 등록 화면에 반영됩니다. 이미 직접 짚은 위치와 겹치는 범위는 앱이 검사합니다.
 
-![학교 양식 확인 화면 — 가상 예제](docs/format-review.png)
+## 소스에서 실행
 
-## 빈 양식 분석과 시험 문제 제공은 다릅니다
+Windows, 설치형 한컴오피스 한글과 Python 3.12가 필요합니다. 저장소 루트에서 PowerShell로 실행합니다.
 
-**실제 문항·정답이 없는 빈 학교 양식을 GPT 등으로 분석하는 것은 시험 문제를 제공하는 일이 아닙니다.** 번호·폰트·줄간격·여백·상자 구조를 분석하는 데 실제 출제 파일이나 완성 시험지는 필요하지 않습니다.
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m app.main
+```
 
-**이 프로그램은 AI에 파일을 자동 전송하지 않습니다.** 수합·편집·서식 추출·JSON 검증은 PC에서 처리합니다. 개인 AI 사용은 선택 사항이며 사용자가 빈 양식과 지침을 직접 제공한 후, 분석 결과 JSON만 앱으로 가져옵니다. AI 없이도 사용할 수 있습니다.
+Windows 단일 실행 파일을 만들려면 같은 디렉터리에서 다음 명령을 사용합니다. 결과는 `build\dist\HWPExamAssembler-Public.exe`에 생성됩니다.
 
-예시 문항·정답이 포함된 파일은 빈 양식과 구분해 주세요. 이 설명은 외부 AI 서비스의 자료 보관·처리까지 무조건 보장한다는 뜻은 아닙니다. [문서 처리 안내](PRIVACY.md)에 처리 범위를 설명했습니다.
+```powershell
+.\scripts\build_public.ps1 -Python .\.venv\Scripts\python.exe -BuildDirectory .\build
+```
 
-## 사용 순서
+한컴 보안 모듈을 포함하려면 한컴의 **보안모듈(Automation).zip**에서 `FilePathCheckerModuleExample.dll`을 받아 빌드 인수 `-HancomModule`로 경로를 지정합니다. 스크립트가 지원하는 공식 모듈의 SHA-256을 확인합니다. 모듈을 생략한 환경에서는 한글의 파일 접근 안내에 따라 승인할 수 있습니다. [한컴 오토메이션 개발 가이드와 이용 조건](https://developer.hancom.com/en-us/hwpautomation)
 
-1. **시험지 수합**에서 학교 양식과 새 수합본 경로를 지정합니다.
-2. **학교 양식 인식 결과**에서 실제 서식·지시문·근거·충돌을 확인합니다.
-3. 개인 AI를 사용한다면 **AI 분석 프롬프트 복사 → 빈 양식 분석 → AI JSON 불러오기**를 진행합니다. 비교할 후보를 선택하고 확인 결과를 저장합니다.
-4. 한글에서 양식 예시 영역과 마지막 고정 블록을 확인한 뒤 출제 파일을 추가합니다.
-5. 수합본을 저장하면 지원 서식 속성을 다시 대조합니다. 문항 순서·삭제·난이도는 편집 화면에서 지정합니다.
-6. 한글에서 직접 수정한 뒤 저장하고, 앱에서 편집 완료 후 다시 읽어 후속 편집을 진행합니다. 최종 결과는 한글에서 검수합니다.
+## 기관에서 Gemini 연결하기
 
-[사용안내](사용안내.txt) · [학교 양식 확인 상세 안내](docs/template-format-review.md) · [개인 AI 사용 순서](docs/ai-template-profile.md) · [분석 프롬프트](ai-template/analysis-prompt.txt)
+1. Google Cloud 프로젝트에서 **Generative Language API**를 사용 설정하고 OAuth 동의 화면을 구성합니다. 테스트 중에는 허용된 계정을 등록하고, 외부 공개 시에는 Google의 동의 화면·검증 요건을 확인합니다. [Google OAuth 설정](https://ai.google.dev/gemini-api/docs/oauth)
+2. OAuth 클라이언트 유형으로 **데스크톱 앱**을 선택해 JSON을 받습니다. 사용자는 같은 프로젝트에 `serviceusage.services.use` 권한이 있어야 합니다. 관리자는 참여 교사 또는 교사 그룹에 이 권한을 포함하는 **Service Usage Consumer** 역할을 부여할 수 있습니다. [Google Cloud 프로젝트 사용 권한](https://docs.cloud.google.com/docs/quotas/set-quota-project)
+3. 실행 파일 옆에 `google-desktop-client.json` 이름으로 두거나 **기관용 Google 설정 파일 선택…**에서 파일을 지정합니다. 소스 실행 시에는 저장소 루트에 두거나 `HWP_EXAM_GOOGLE_CLIENT` 환경 변수로 경로를 지정할 수 있습니다. 관리자가 이 설정을 배포하면 교사는 자기 Google 계정으로 로그인합니다.
 
-## 현재 범위와 검증
+## 검증과 이전 버전 자료
 
-분석·대조 기능이며 모든 문항의 서식을 자동 변경하지는 않습니다. 그림의 개별 위치 좌표·배치 기준·여백·테두리와 페이지 설정은 AI JSON에 보관해 검토할 수 있지만 현재 자동 비교에는 연결하지 않았습니다. 화면상의 겹침·잘림·줄바꿈도 한글에서 확인해야 합니다. 역할 분류와 AI가 기록한 근거는 원본과 대조해야 합니다.
+실제 한글에서 가상 학교 양식을 등록하고 HWP·HWPX 원고를 수합했습니다. 순서·난이도 변경, 저장과 재개방 뒤 문항별 수식 9개와 고정 표·안내문을 확인했습니다. 로그인과 분석의 자동 테스트는 로컬 브라우저 콜백 및 모의 제공자 응답을 사용합니다. 실제 계정의 동의와 사용 한도는 각 제공자가 결정합니다.
 
-20개 자동 테스트 파일 통과, 실제 학교 문서가 필요한 기존 시험 1개 제외. 실제 한글에서 합성 2문항 수합, 원본 보존, AI JSON 기준을 포함한 4개 규칙 대조, 검토 기록 저장, HWPX 저장·재개방을 확인했습니다. [검증 결과](docs/verification.json)
+v0.2.0-alpha의 43개 항목 서식 검토, 수합 후 서식 대조와 외부 JSON 규격은 별도 자료로 보관합니다. [서식 기준과 한계](docs/template-format-review.md) · [서식 규칙 JSON](docs/ai-template-profile.md) · [분석 프롬프트](ai-template/analysis-prompt.txt) · [당시 검증 기록](docs/verification.json)
 
-## 배포 형태
+## 라이선스
 
-이 저장소는 **배포 전용 저장소**입니다. 실행 파일은 GitHub Releases로 제공하며 개발 소스, 실제 학교 양식, 출제 문서는 포함하지 않습니다. AI JSON 예제는 가상 수치이며 실제 학교 규칙으로 적용하면 안 됩니다.
+프로젝트 자체 소스에는 MIT 라이선스를 적용합니다. 번들 글꼴 Noto Sans KR에는 SIL Open Font License 1.1이 적용됩니다. 한컴 한글·공식 DLL과 Python 패키지에는 각 공급자의 라이선스가 적용됩니다. [프로젝트 라이선스](LICENSE) · [글꼴 라이선스](assets/fonts/OFL.txt)

@@ -1,0 +1,95 @@
+{
+  "schema_version": 5,
+  "profile_id": "generic-hwp-exam-v1",
+  "school": "",
+  "display_name": "범용 HWP 시험지 분석 설정",
+  "status": "generic",
+  "template": {
+    "sha256": "",
+    "bundled_filename": "",
+    "role": "user-supplied",
+    "contains_examples": false,
+    "body_start_marker": ""
+  },
+  "layout": {
+    "paper": "template-defined",
+    "body_columns": 0,
+    "column_divider": false,
+    "document_types": {
+      "none": {
+        "label": "선택 안 함",
+        "density": "template-default",
+        "separator_blank_paragraphs": 0,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": [],
+        "group_policy": "auto",
+        "rule": "양식과 원본 문항의 네이티브 흐름을 유지"
+      },
+      "sequential": {
+        "label": "순차형",
+        "density": "normal",
+        "separator_blank_paragraphs": 1,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": ["sequential"],
+        "group_policy": "optional",
+        "rule": "선택형과 서답형이 순서대로 이어지는 흐름"
+      },
+      "mixed_passage": {
+        "label": "혼합 지문형",
+        "density": "compact",
+        "separator_blank_paragraphs": 0,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": ["mixed_passage"],
+        "group_policy": "optional",
+        "rule": "한 지문에 서로 다른 문항 유형이 연결되는 흐름"
+      },
+      "long_passage": {
+        "label": "장문 공통 지문형",
+        "density": "compact",
+        "separator_blank_paragraphs": 0,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": ["objective_passage"],
+        "group_policy": "required",
+        "rule": "공통 지문과 하위 문항을 한 묶음으로 배치"
+      },
+      "shared_visual": {
+        "label": "그림·자료 공유형",
+        "density": "normal",
+        "separator_blank_paragraphs": 1,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": ["objective_passage"],
+        "group_policy": "required",
+        "rule": "공통 그림·표와 하위 문항을 한 묶음으로 배치"
+      },
+      "independent_material": {
+        "label": "독립 자료형",
+        "density": "normal",
+        "separator_blank_paragraphs": 1,
+        "observed_text_density": 0.0,
+        "expected_structure_modes": ["objective_passage", "sequential"],
+        "group_policy": "forbidden",
+        "rule": "각 문항이 독립된 자료를 가지는 흐름"
+      }
+    },
+    "final_check": {
+      "enabled": false,
+      "title": "",
+      "body": "",
+      "placement": "template_preserved",
+      "preferred_column": "template",
+      "source_control": "template",
+      "source_markers": []
+    }
+  },
+  "recognition": {
+    "written_labels": ["서답형", "서술형"],
+    "fixed_phrase_prefixes": [
+      "※ 여기서부터는 서술형 문항입니다.",
+      "※ 여기서부터는 서답형 문항입니다.",
+      "※ 풀이과정이 없으면",
+      "이제 듣기 문제가 끝났습니다."
+    ]
+  },
+  "styles": {},
+  "subject_modes": ["sequential", "mixed_passage", "objective_passage"]
+}
