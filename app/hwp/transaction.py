@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Callable
+import pythoncom
 
 from app.hwp.application import HwpApplication, HwpAutomationError
 from app.hwp.fields import QuestionFieldManager, QuestionTransferMismatch, question_field
@@ -149,22 +150,25 @@ def apply_reorder_transaction(
                 raise HwpAutomationError(
                     f"문항 삭제 후 순서 검증 실패: {question_id}"
                 )
-        for attempt in range(2):
+        try:
+            reorder = apply_permutation(manager, requested_order, on_progress=on_progress, step_delay=step_delay)
+        except QuestionTransferMismatch as first:
+            if deleted_question_ids:
+                raise
+            # Discard the private attempt. Reopen the untouched input for a
+            # different native transfer that verifies Copy and Delete separately.
+            hwp.reset_documents()
+            if sha256(working) != before_hash:
+                raise
+            hwp.open(working)
+            manager = QuestionFieldManager(hwp)
             try:
-                reorder = apply_permutation(
-                    manager, requested_order, on_progress=on_progress, step_delay=step_delay,
-                )
-                break
-            except QuestionTransferMismatch:
-                if attempt or deleted_question_ids:
-                    raise
-                # Discard the partially cut scratch tab. Never Paste twice into
-                # it. Restart from the verified, untouched native input once.
-                hwp.reset_documents()
-                if sha256(working) != before_hash:
-                    raise
-                hwp.open(working)
-                manager = QuestionFieldManager(hwp)
+                reorder = apply_permutation(manager, requested_order, on_progress=on_progress,
+                                            step_delay=step_delay, copy_then_delete=True)
+            except (HwpAutomationError, pythoncom.com_error) as second:
+                raise QuestionTransferMismatch(
+                    f"첫 시도(잘라내기) · {first}\n재시도(복사 후 삭제) · {second}"
+                ) from second
         number_mapping = renumber_visible_questions(
             manager,
             numbered_question_ids,

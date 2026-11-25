@@ -451,6 +451,7 @@ class QuestionFieldManager:
         *,
         on_progress: Callable[[str], None] | None = None,
         step_delay: float = 0.0,
+        copy_then_delete: bool = False,
     ) -> MoveAudit:
         if question_id == destination_id:
             raise ValueError("A question cannot be moved before itself")
@@ -494,12 +495,22 @@ class QuestionFieldManager:
         cut_order = tuple(qid for qid in order_before if qid != question_id)
         # Reading a native saveblock can move focus into an embedded object.
         # Restore the verified body range immediately before issuing Cut.
-        restored = self.hwp.select_position_range(selection[:3], selection[3:])
-        if restored != selection or self.field_names(selection_only=True) != expected_fields:
-            raise QuestionTransferMismatch(f"{question_id} 문항의 잘라낼 범위를 다시 확인할 수 없습니다.")
-        self.hwp.cut_selection()
-        if self._wait_for_transfer_order(cut_order) != cut_order:
-            raise QuestionTransferMismatch(f"{question_id} 문항만 잘라냈는지 확인할 수 없습니다.")
+        self._restore_move_selection(question_id, selection, expected_fields)
+        if copy_then_delete:
+            self.hwp.copy_selection()
+            # Copy can change object focus too. Delete only the same verified
+            # native body range, after checking the QIDs it currently contains.
+            self._restore_move_selection(question_id, selection, expected_fields, after_copy=True)
+            self.hwp.delete_selection()
+        else:
+            self.hwp.cut_selection()
+        removed = self._wait_for_transfer_order(cut_order)
+        if removed != cut_order:
+            action = "복사 후 삭제" if copy_then_delete else "잘라내기"
+            raise QuestionTransferMismatch(
+                f"{question_id} {action} 후 문항 순서 불일치. 선택 위치 {selection!r}, "
+                f"예상 ID {cut_order!r}, 실제 ID {removed!r}"
+            )
         destination_position = self._destination_after_cut(destination_field, starts_paragraph)
         self.hwp.set_position(destination_position)
         self.hwp.paste()
@@ -508,7 +519,10 @@ class QuestionFieldManager:
         expected_order.insert(insertion_index, question_id)
         order_after = self._wait_for_transfer_order(tuple(expected_order))
         if order_after != tuple(expected_order):
-            raise QuestionTransferMismatch(f"{question_id} 문항을 붙여넣은 뒤 순서가 요청과 다릅니다.")
+            raise QuestionTransferMismatch(
+                f"{question_id} 붙여넣기 후 문항 순서 불일치. 선택 위치 {selection!r}, "
+                f"붙여넣을 위치 {destination_position!r}, 예상 ID {tuple(expected_order)!r}, 실제 ID {order_after!r}"
+            )
         if on_progress is not None:
             on_progress(f"{question_id} → {destination_id + ' 앞' if destination_id else '마지막'}에 붙여넣기")
         return MoveAudit(
@@ -519,6 +533,20 @@ class QuestionFieldManager:
             selected_fields=selected_fields,
             selected_text_length=len(selected_text),
         )
+
+    def _restore_move_selection(self, qid, selection, expected_fields, *, after_copy=False):
+        restored = self.hwp.select_position_range(selection[:3], selection[3:])
+        actual_fields = self.field_names(selection_only=True)
+        if restored != selection or actual_fields != expected_fields:
+            # Native templates may contain arbitrary field names. Only show
+            # examiner IDs and the presence of an unrelated field in diagnostics.
+            actual = tuple(name if name.startswith((FIELD_PREFIX, CHILD_FIELD_PREFIX)) else "(기타 필드)"
+                           for name in actual_fields)
+            stage = "복사 후 삭제 전" if after_copy else "이동 전"
+            raise QuestionTransferMismatch(
+                f"{qid} {stage} 선택 범위 불일치. 예상 위치 {selection!r}, 실제 위치 {restored!r}, "
+                f"예상 필드 {expected_fields!r}, 실제 필드 {actual!r}"
+            )
 
     def _wait_for_transfer_order(self, expected: tuple[str, ...]) -> tuple[str, ...]:
         # GetFieldList can expose a partial update after the native action.

@@ -92,6 +92,7 @@ def apply_permutation(
     *,
     on_progress: Callable[[str], None] | None = None,
     step_delay: float = 0.0,
+    copy_then_delete: bool = False,
 ) -> ReorderAudit:
     order_before = manager.ordered_question_ids()
     validate_permutation(order_before, requested_order)
@@ -117,7 +118,9 @@ def apply_permutation(
         successor = None
         for item in reversed(target):
             if not item.startswith(FIXED_FIELD_PREFIX) and item not in stationary:
-                moves.append(manager.move_before(item, successor, on_progress=on_progress, step_delay=step_delay))
+                moves.append(manager.move_before(
+                    item, successor, on_progress=on_progress, step_delay=step_delay, copy_then_delete=copy_then_delete,
+                ))
             successor = item
 
     order_after = manager.ordered_question_ids()

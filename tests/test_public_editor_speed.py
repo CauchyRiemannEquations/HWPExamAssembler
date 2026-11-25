@@ -52,6 +52,60 @@ class PublicEditorSpeedTests(unittest.TestCase):
             self.assertEqual(manager._wait_for_transfer_order(target), target)
             pump.assert_called_once()
 
+    def test_copy_delete_reselects_after_copy_and_never_deletes_a_different_field(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed):
+                native = Mock()
+                manager = QuestionFieldManager(native)
+                first, moving = question_field("A"), question_field("B")
+                fields = [first, moving]
+                selection = (0, 3, 0, 0, 5, 0)
+                selected = moving
+                events = []
+
+                def restore(start, end):
+                    nonlocal selected
+                    self.assertEqual((start, end), (selection[:3], selection[3:]))
+                    events.append("select")
+                    selected = first if changed and "copy" in events else moving
+                    return selection
+
+                def copy():
+                    nonlocal selected
+                    events.append("copy")
+                    selected = first
+
+                def delete():
+                    events.append("delete")
+                    self.assertEqual(selected, moving)
+                    fields.remove(moving)
+
+                def paste():
+                    events.append("paste")
+                    self.assertEqual(fields, [first])
+                    fields.insert(0, moving)
+
+                native.automation.GetFieldList.side_effect = lambda _mode, flags: (
+                    selected if flags & 4 else "\x02".join(fields)
+                )
+                native.select_position_range.side_effect = restore
+                native.selected_plain_text.return_value = "body"
+                native.copy_selection.side_effect = copy
+                native.delete_selection.side_effect = delete
+                native.paste.side_effect = paste
+                with (patch.object(manager, "select_question", return_value=selection),
+                      patch.object(manager, "block_boundary_position", return_value=(0, 2, 1))):
+                    if changed:
+                        with self.assertRaisesRegex(QuestionTransferMismatch, "복사 후 삭제 전"):
+                            manager.move_before("B", "A", copy_then_delete=True)
+                        self.assertEqual(events, ["select", "copy", "select"])
+                        self.assertEqual(fields, [first, moving])
+                    else:
+                        result = manager.move_before("B", "A", copy_then_delete=True)
+                        self.assertEqual(events, ["select", "copy", "select", "delete", "paste"])
+                        self.assertEqual(result.order_after, ("B", "A"))
+                    native.cut_selection.assert_not_called()
+
     def test_second_incorrect_native_transfer_stops_without_writing_the_original(self):
         native = Mock()
         manager = Mock()
@@ -60,14 +114,16 @@ class PublicEditorSpeedTests(unittest.TestCase):
         with (tempfile.TemporaryDirectory() as directory,
               patch("app.hwp.transaction.QuestionFieldManager", return_value=manager),
               patch("app.hwp.transaction.apply_permutation",
-                    side_effect=QuestionTransferMismatch("unexpected native block")) as transfer):
+                    side_effect=[QuestionTransferMismatch("Q003 잘라내기 실패"), QuestionTransferMismatch("Q003 삭제 실패")]) as transfer):
             root = Path(directory)
             doc = root / "exam.hwp"
             doc.write_bytes(b"original")
-            with self.assertRaises(QuestionTransferMismatch):
+            with self.assertRaisesRegex(QuestionTransferMismatch, "(?s)Q003 잘라내기 실패.*Q003 삭제 실패"):
                 apply_reorder_transaction(native, doc, ("B", "A"), (), numbering_style=None,
                                           backup_dir=root / "backup", work_dir=root)
             self.assertEqual(transfer.call_count, 2)
+            self.assertFalse(transfer.call_args_list[0].kwargs.get("copy_then_delete", False))
+            self.assertTrue(transfer.call_args_list[1].kwargs["copy_then_delete"])
             self.assertEqual(native.open.call_args_list[0], native.open.call_args_list[1])
             self.assertEqual(doc.read_bytes(), b"original")
             native.save_exam_copy.assert_not_called()
