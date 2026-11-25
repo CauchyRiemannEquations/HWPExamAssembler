@@ -200,14 +200,14 @@ class ExamDocumentService:
         return questions
 
     @classmethod
-    def capture_verified_list(cls, manager, order, controls, metadata, *, verified_path=None):
-        """Opportunistically index the already-reopened, verified native file."""
+    def capture_verified_list(cls, manager, order, controls, metadata, *, verified_path=None, required=False):
+        """Read the verified tab's saved bytes and fall back to native summaries."""
         from .quick_questions import read_questions
 
         try:
             path = Path(manager.hwp.active_document().FullName)
             if verified_path is not None and path.resolve() != verified_path.resolve():
-                return None
+                raise ValueError("검증 중인 한글 문서의 경로가 달라졌습니다.")
             digest = sha256(path)
             questions = read_questions(path, metadata)
             if questions and tuple(q.id for q in questions) == order:
@@ -221,6 +221,8 @@ class ExamDocumentService:
             native_questions = cls.read_open_questions(manager.hwp, manager, order, metadata, controls=controls)
             return DocumentSnapshot(path, tuple(native_questions), digest)
         except Exception:
+            if required:
+                raise
             # A preview error does not invalidate a verified native save.
             # The editor can still use its normal inspection path.
             return None

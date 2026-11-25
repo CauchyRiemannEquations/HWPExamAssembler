@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from bisect import bisect_left
 from datetime import datetime
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from itertools import count
 from pathlib import Path
 import shutil
@@ -11,7 +11,10 @@ import stat
 
 from app.hwp.application import HwpAutomationError
 from app.hwp.fields import FIXED_FIELD_PREFIX, MoveAudit, QuestionFieldManager, question_field
-from app.hwp.numbering import NumberingStyleProfile, apply_numbering_style
+from app.hwp.numbering import (
+    NumberingStyleProfile, apply_numbering_style, capture_number_and_style, capture_numbering_style,
+    field_numbering, numbering_styles_visually_equivalent,
+)
 
 
 @dataclass(frozen=True)
@@ -176,9 +179,10 @@ def set_visible_field_number(
     hwp.automation.HAction.GetDefault("ParagraphShape", parameter.HSet)
     parameter.HeadingType = 2
     parameter.Level = 0
-    parameter.Numbering.NewList = 1
-    parameter.Numbering.StartNumber = number
-    parameter.Numbering.StartNumber0 = number
+    numbering = parameter.Numbering
+    numbering.NewList = 1
+    numbering.StartNumber = number
+    numbering.StartNumber0 = number
     executed = hwp.automation.HAction.Execute(
         "ParagraphShape", parameter.HSet
     )
@@ -227,17 +231,28 @@ def renumber_visible_questions(
     style: NumberingStyleProfile | None = None,
     on_progress: Callable[[str], None] | None = None,
     step_delay: float = 0.0,
+    reuse_numbering: bool = False,
 ) -> dict[str, int]:
     targets = numbered_field_targets(manager, question_ids)
     mapping = {
         display_id: number
         for number, (display_id, _field_name) in enumerate(targets, start=1)
     }
+    definitions = {}
+    if reuse_numbering and style is not None:
+        definitions = field_numbering(manager.hwp, [name for _, name in targets])
     for number, (display_id, field_name) in enumerate(targets, start=1):
         if on_progress is not None:
             on_progress(f"{display_id} 화면 번호를 {number}번으로 갱신")
-        set_visible_field_number(manager, field_name, number, style=style)
+        existing = definitions.get(field_name)
+        if existing is None:
+            set_visible_field_number(manager, field_name, number, style=style)
+        elif existing.start != number:
+            set_visible_field_number(manager, field_name, number)
         manager.hwp.visual_step(step_delay)
+    if definitions and style is not None:
+        for number, _, field_name in mismatched_numbering(manager, targets, style, fields=definitions):
+            set_visible_field_number(manager, field_name, number, style=style)
     # A common passage label such as [16~17] is part of the native block, not
     # a paragraph number.  Keep it synchronized with the child QIDs after the
     # permutation has established their new visible numbers.
@@ -258,3 +273,40 @@ def renumber_visible_questions(
                 )
         manager.hwp.visual_step(step_delay)
     return mapping
+
+
+def mismatched_numbering(
+    manager: QuestionFieldManager,
+    targets: tuple[tuple[str, str], ...],
+    style: NumberingStyleProfile,
+    *,
+    fields: Collection[str] | None = None,
+) -> list[tuple[int, str, str]]:
+    """Check each field against its saved ordinal and a native style reading."""
+    wanted = set(fields) if fields is not None else {name for _, name in targets}
+    definitions = field_numbering(manager.hwp, wanted)
+    styles = {}
+    failures = []
+    for number, (display_id, name) in enumerate(targets, 1):
+        if name not in wanted:
+            continue
+        definition = definitions.get(name)
+        if definition is None:
+            if fields is not None:
+                # A previously independent list changed while numbering its neighbours.
+                failures.append((number, display_id, name))
+                continue
+            manager.hwp.set_position(manager.position(name))
+            start, actual = capture_number_and_style(manager.hwp)
+            matches = start == number and numbering_styles_visually_equivalent(style, actual)
+        elif definition.start != number:
+            matches = False
+        else:
+            key = definition.appearance
+            if key not in styles:
+                manager.hwp.set_position(manager.position(name))
+                styles[key] = numbering_styles_visually_equivalent(style, capture_numbering_style(manager.hwp))
+            matches = styles[key]
+        if not matches:
+            failures.append((number, display_id, name))
+    return failures

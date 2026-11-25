@@ -1,5 +1,6 @@
 """The editable list may be reused only for the exact saved native document."""
 from dataclasses import replace
+from contextlib import nullcontext
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,8 +8,10 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.hwp.transaction import sha256
+from app.hwp.application import HwpAutomationError
 from app.services import question_index
 from app.services.exam_service import DocumentSnapshot, ExamDocumentService, QuestionSummary
+from app.services.live_document import LiveDocumentSession
 
 
 class QuestionIndexTest(unittest.TestCase):
@@ -102,3 +105,42 @@ class QuestionIndexTest(unittest.TestCase):
                 self.assertEqual(capture(manager, ("G1",), controls, self.metadata), self.snapshot)
             self.assertEqual(native.call_count, 2)
             self.assertIsNone(capture(manager, ("G1",), controls, self.metadata, verified_path=self.root / "other.hwp"))
+
+    def test_live_save_requires_the_verified_question_list(self):
+        manager = Mock()
+        manager.hwp.active_document.return_value.FullName = str(self.path)
+        with (patch("app.services.quick_questions.read_questions", return_value=None),
+              patch.object(ExamDocumentService, "read_open_questions", side_effect=OSError("verification failed"))):
+            with self.assertRaisesRegex(OSError, "verification failed"):
+                ExamDocumentService.capture_verified_list(
+                    manager, self.snapshot.order, {"G1": self.group.controls}, self.metadata, required=True,
+                )
+
+    def test_live_save_refuses_to_publish_if_verified_copy_changes(self):
+        service = self.service()
+        second = QuestionSummary("Q2", "다음 문항", True, {})
+        snapshot = replace(self.snapshot, questions=(self.group, second))
+        session = LiveDocumentSession(service)
+        target = session.target = Mock(path=self.path)
+        target.doc.EditMode, target.doc.Modified, target.doc.FullName = 1, False, str(self.path)
+        target.guard_input.side_effect = nullcontext
+        scratch = Mock()
+        scratch.run.side_effect = lambda task: task(None)
+
+        def transaction(worker, staged, order, numbered, **options):
+            staged.write_bytes(b"verified staging bytes")
+            manager = Mock()
+            manager.hwp.active_document.return_value.FullName = str(staged)
+            options["on_verified"](manager, {})
+            staged.write_bytes(b"unexpected staging bytes")
+            return Mock(after_sha256=sha256(staged))
+
+        with (patch.object(session, "_check_structure"), patch.object(session, "_scratch_worker", return_value=scratch),
+              patch.object(session, "_publish") as publish,
+              patch.object(ExamDocumentService, "read_open_questions", return_value=(second, self.group)),
+              patch("app.services.quick_questions.read_questions", return_value=None),
+              patch("app.services.live_document.apply_reorder_transaction", side_effect=transaction)):
+            with self.assertRaises(HwpAutomationError):
+                session.apply(snapshot, ("Q2", "G1"))
+        publish.assert_not_called()
+        self.assertEqual(sha256(self.path), self.snapshot.content_sha256)

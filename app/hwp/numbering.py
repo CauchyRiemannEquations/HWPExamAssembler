@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
+from xml.etree import ElementTree
 
 from app.hwp.application import HwpApplication, HwpAutomationError
 
@@ -49,12 +52,80 @@ class NumberingStyleProfile:
         return cls(**values)  # type: ignore[arg-type]
 
 
+@dataclass(frozen=True)
+class FieldNumbering:
+    start: int
+    appearance: tuple
+
+
+def _field_numbering(xml: str, fields: set[str]) -> dict[str, FieldNumbering]:
+    root = ElementTree.fromstring(xml)
+    tables = root.find("./HEAD/MAPPINGTABLE")
+    body = root.find("BODY")
+    if tables is None or body is None:
+        return {}
+    shapes = {node.attrib["Id"]: node for node in tables.findall("PARASHAPELIST/PARASHAPE")}
+    lists = {node.attrib["Id"]: node for node in tables.findall("NUMBERINGLIST/NUMBERING")}
+    # A list shared with a paragraph in a cell, header or footnote can keep
+    # counting even when the definition itself starts at the requested number.
+    paragraph_shapes = (shapes[p.attrib["ParaShape"]] for p in body.iter("P"))
+    uses = Counter(shape.get("Heading") for shape in paragraph_shapes if shape.get("HeadingType") == "Number")
+    result = {}
+    for paragraph in body.findall("SECTION/P"):
+        names = [f.get("Name") for f in paragraph.findall("TEXT/FIELDBEGIN")
+                 if f.get("Type") == "Clickhere" and f.get("Name") in fields]
+        if len(names) != 1:
+            continue
+        shape = shapes[paragraph.attrib["ParaShape"]]
+        ref = shape.get("Heading")
+        if shape.get("HeadingType") != "Number" or shape.get("Level") != "0" or uses[ref] != 1:
+            continue
+        definition = lists[ref]
+        head = definition.find("PARAHEAD[@Level='1']")
+        if head is None or len(head) or head.get("Start") != definition.get("Start"):
+            continue
+        # The appearance key is local to this export. Identical first-level
+        # definitions refer to the very same character style in its mapping table.
+        appearance = (
+            head.text,
+            tuple(sorted((k, v) for k, v in head.attrib.items() if k != "Start")),
+            tuple(sorted((k, v) for k, v in definition.attrib.items() if k not in {"Id", "Start"})),
+        )
+        result[names[0]] = FieldNumbering(int(head.attrib["Start"]), appearance)
+    return result
+
+
+def field_numbering(hwp: HwpApplication, fields: Collection[str]) -> dict[str, FieldNumbering]:
+    if not fields:
+        return {}
+    try:
+        return _field_numbering(hwp.automation.GetTextFile("HWPML2X", ""), set(fields))
+    except Exception:
+        # An older exporter or an unusual numbering scheme uses the native
+        # per-field reads and writes. The native save verification still runs.
+        return {}
+
+
 def capture_numbering_style(hwp: HwpApplication) -> NumberingStyleProfile:
+    parameter = _numbered_paragraph_at_caret(hwp)
+    return _numbering_style(parameter.Numbering)
+
+
+def capture_number_and_style(hwp: HwpApplication) -> tuple[int, NumberingStyleProfile]:
+    parameter = _numbered_paragraph_at_caret(hwp)
+    numbering = parameter.Numbering
+    return int(numbering.StartNumber0), _numbering_style(numbering)
+
+
+def _numbered_paragraph_at_caret(hwp: HwpApplication):
     parameter = hwp.automation.HParameterSet.HParaShape
     hwp.automation.HAction.GetDefault("ParagraphShape", parameter.HSet)
     if int(parameter.HeadingType) != 2:
         raise HwpAutomationError("Current paragraph does not use paragraph numbering")
-    numbering = parameter.Numbering
+    return parameter
+
+
+def _numbering_style(numbering) -> NumberingStyleProfile:
     character = None
     if int(numbering.HasCharShapeLevel0):
         shape = numbering.CharShapeLevel0

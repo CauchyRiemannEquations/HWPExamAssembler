@@ -166,12 +166,13 @@ class QuestionListWidget(QListWidget):
         rows = self._selected_rows()
         if not rows or len(rows) == self.count():
             return
+        selected = self.selected_ids()
         label = "최종 배치 위치" if len(rows) == 1 else f"선택한 {len(rows)}개 항목의 첫 번째 위치"
         last_position = self.count() - len(rows) + 1
         position, accepted = QInputDialog.getInt(
             self, "문항 이동", f"{label} (1~{last_position})", rows[0] + 1, 1, last_position
         )
-        if accepted:
+        if accepted and self.isEnabled() and self.selected_ids() == selected:
             self.move_selected_to(position - 1)
 
     def set_difficulties(self, values: dict[str, str]) -> None:
@@ -261,11 +262,17 @@ class QuestionListWidget(QListWidget):
             self.item(row).data(QUESTION_ROLE).id for row in range(self.count())
         )
 
-    def refresh_labels(self) -> None:
+    def refresh_labels(self, summaries: dict[str, QuestionSummary] | None = None) -> None:
         visible_number = 0
         for row in range(self.count()):
             item = self.item(row)
-            question: QuestionSummary = item.data(QUESTION_ROLE)
+            previous: QuestionSummary = item.data(QUESTION_ROLE)
+            question = summaries[previous.id] if summaries is not None else previous
+            old_number = item.data(NUMBER_ROLE)
+            summary_changed = summaries is not None and question != previous
+            details_changed = old_number is None or summary_changed
+            if summary_changed:
+                item.setData(QUESTION_ROLE, question)
             if question.kind == "group" and question.objective_count:
                 start = visible_number + 1
                 visible_number += question.objective_count
@@ -279,6 +286,12 @@ class QuestionListWidget(QListWidget):
                 number = f"{visible_number}."
             else:
                 number = "—"
+            if not details_changed and number == old_number:
+                continue
+            item.setData(NUMBER_ROLE, number)
+            self._update_row_text(item, question, number)
+            if not details_changed:
+                continue
             controls = ", ".join(
                 f"{name.split(':', 1)[-1]} {count}"
                 for name, count in question.controls.items()
@@ -288,8 +301,6 @@ class QuestionListWidget(QListWidget):
                 if question.kind == "group"
                 else ""
             )
-            item.setData(NUMBER_ROLE, number)
-            self._update_row_text(item, question, number)
             child_text = (
                 f"\n하위 QID: {' '.join(question.child_ids)}" if question.child_ids else ""
             )
@@ -302,8 +313,7 @@ class QuestionListWidget(QListWidget):
                 f"{question.preview}\n{question.id}{count_text}{child_text}\n{controls}{error_text}"
                 "\n번호를 누르거나 Ctrl+M으로 이동 · 하·중·상 클릭으로 난이도 지정"
             )
-            if question.manual_required:
-                item.setForeground(QColor("#a33a16"))
+            item.setData(Qt.ItemDataRole.ForegroundRole, QColor("#a33a16") if question.manual_required else None)
 
     def _reorder(self, items) -> bool:
         if tuple(item.data(QUESTION_ROLE).id for item in items) == self.ordered_ids():

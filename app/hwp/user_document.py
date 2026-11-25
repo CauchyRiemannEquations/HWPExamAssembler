@@ -208,6 +208,21 @@ class UserDocument(HwpApplication):
                 or hwnd != self.hwnd or not win32gui.IsWindow(hwnd)):
             raise HwpAutomationError("연결된 한글 편집본이 현재 탭이 아닙니다. 해당 문서로 돌아와 다시 시도하세요.")
 
+    def _require_file_action_target(self, path):
+        self.require_target(path)
+        # On versions exposing the application-level Path, confirm its global
+        # file actions address the same document as the active tab collection.
+        try:
+            active_path = self.automation.Path
+        except AttributeError:
+            return
+        except pythoncom.com_error as error:
+            if error.hresult in (-2147352573, -2147352570):  # member/name not found
+                return
+            raise
+        if not active_path or not Path(active_path).is_absolute() or Path(active_path).resolve() != path:
+            raise HwpAutomationError("한글에서 다른 문서를 편집 중입니다. 해당 편집본으로 돌아와 다시 시도하세요.")
+
     @contextmanager
     def guard_input(self):
         import win32gui
@@ -242,7 +257,8 @@ class UserDocument(HwpApplication):
         fmt = {".hwp": "HWP", ".hwpx": "HWPX"}[self.path.suffix.lower()]
         previous_mode = self.automation.SetMessageBoxMode(0x00001000)
         try:
-            saved = self.doc.SaveAs(str(self.path), fmt, "fullsave:true")
+            self._require_file_action_target(self.path)
+            saved = self.automation.SaveAs(str(self.path), fmt, "fullsave:true")
         finally:
             self.automation.SetMessageBoxMode(previous_mode)
         self.require_target()
@@ -271,7 +287,21 @@ class UserDocument(HwpApplication):
                 raise HwpAutomationError("한글에 새 수정이 있어 문서 반영을 중단했습니다.")
             self.doc.Modified = 0
         try:
-            if not self.doc.Open(str(new_path), "", ""):
+            # Explorer-owned Hangul can throw RPC_E_SERVERFAULT from the
+            # document-level Open/SaveAs methods. The application methods act
+            # on the active tab, whose identity and HWND we guard on both sides.
+            fmt = {".hwp": "HWP", ".hwpx": "HWPX"}[new_path.suffix.lower()]
+            previous_mode = self.automation.SetMessageBoxMode(0x00001000)
+            try:
+                self._require_file_action_target(old_path)
+                opened = self.automation.Open(str(new_path), fmt, "skipcomment:true")
+            except pythoncom.com_error:
+                if not _matches(self.doc, new_path):
+                    raise
+                opened = True  # The native operation completed before COM reported the error.
+            finally:
+                self.automation.SetMessageBoxMode(previous_mode)
+            if not opened and not _matches(self.doc, new_path):
                 raise HwpAutomationError(f"같은 한글 창에 문서를 불러올 수 없습니다: {new_path}")
             self.require_target(new_path)
         except Exception:

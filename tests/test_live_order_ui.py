@@ -13,7 +13,9 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QInputDialog
 
 from app.services import DocumentSnapshot, ExamDocumentService, QuestionSummary, file_fingerprint
 from app.services.difficulty import load_difficulties
@@ -260,6 +262,156 @@ def exercise_live_editor():
 
 
 class AutomaticOrderTest(unittest.TestCase):
+    def test_number_picker_keeps_draft_after_failure_and_retry_leaves_new_deletion_staged(self):
+        app = QApplication.instance() or QApplication([])
+        service = SyntheticService()
+        native = NativeWindow(service)
+        with TemporaryDirectory() as folder, patch.object(native, "apply", wraps=native.apply) as apply:
+            path = Path(folder) / "exam.hwp"
+            path.write_bytes(b"initial")
+            questions = tuple(QuestionSummary(key, key, True, {}) for key in "ABCDE")
+            window = MainWindow(service, companion_factory=lambda _: native)
+            widget = window.question_list
+            window.show()
+            window._document_loaded(DocumentSnapshot(path, questions, file_fingerprint(path).sha256))
+            window.open_current_in_hwp()
+            wait_until(app, lambda: window._editing_in_hwp and not window._busy)
+            try:
+                native.hold.clear()
+                widget.setCurrentRow(1)
+                widget.move_selected_to(0)
+                wait_until(app, native.applying.is_set)
+                widget.setCurrentRow(3)
+                deadline = time.monotonic() + 2
+                timer = QTimer()
+                def finish_picker():
+                    dialog = app.activeModalWidget()
+                    if isinstance(dialog, QInputDialog):
+                        native.active = False
+                        native.hold.set()
+                        if window._live_issue:
+                            dialog.setIntValue(1)
+                            dialog.accept()
+                        elif time.monotonic() >= deadline:
+                            dialog.reject()
+                timer.timeout.connect(finish_picker)
+                timer.start(10)
+                try:
+                    widget.request_position()
+                finally:
+                    timer.stop()
+                QTest.qWait(120)
+                self.assertEqual(widget.ordered_ids(), tuple("DBACE"))
+                self.assertTrue(window._live_issue and window.apply_button.isEnabled())
+                self.assertEqual(apply.call_count, 1)
+                self.assertEqual(native.native_order, tuple("ABCDE"))
+
+                native.active = True
+                native.applying.clear()
+                native.hold.clear()
+                window.apply_button.click()
+                wait_until(app, native.applying.is_set)
+                widget.setCurrentRow(2)
+                self.assertEqual(widget.remove_selected(), ("A",))
+                native.hold.set()
+                wait_until(app, lambda: not window._busy and not window._auto_pending)
+                self.assertEqual(native.native_order, tuple("DBACE"))
+                self.assertEqual(widget.ordered_ids(), tuple("DBCE"))
+                self.assertEqual(window.apply_button.text(), "순서·삭제 반영")
+                window.undo_button.click()
+                wait_until(app, lambda: not window._auto_pending)
+                self.assertEqual(widget.ordered_ids(), native.native_order)
+                self.assertEqual(apply.call_count, 2)
+            finally:
+                native.hold.set()
+                wait_until(app, lambda: not window._busy)
+                with patch.object(window, "_allow_discard", return_value=True):
+                    window.close()
+                    wait_until(app, lambda: window._live_thread is None)
+
+    def test_move_other_rows_while_probe_and_save_are_outstanding(self):
+        app = QApplication.instance() or QApplication([])
+        service = SyntheticService()
+        native = NativeWindow(service)
+        probe_started, release_probe = threading.Event(), threading.Event()
+
+        def probe():
+            probe_started.set()
+            assert release_probe.wait(3)
+            return "active"
+
+        class DisableObserver(QObject):
+            def __init__(self):
+                super().__init__()
+                self.disabled = False
+
+            def eventFilter(self, watched, event):
+                if event.type() == QEvent.Type.EnabledChange and not watched.isEnabled():
+                    self.disabled = True
+                return False
+
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "exam.hwp"
+            path.write_bytes(b"initial")
+            questions = tuple(QuestionSummary(key, key, True, {}) for key in "ABCDEF")
+            window = MainWindow(service, companion_factory=lambda _: native)
+            widget = window.question_list
+            window.show()
+            window._document_loaded(DocumentSnapshot(path, questions, file_fingerprint(path).sha256))
+            window.open_current_in_hwp()
+            wait_until(app, lambda: window._editing_in_hwp and window._live_operation is None)
+            observer = DisableObserver()
+            widget.installEventFilter(observer)
+            try:
+                with patch.object(native, "probe", side_effect=probe):
+                    window._poll_hwp_session()
+                    wait_until(app, probe_started.is_set)
+                    widget.setCurrentRow(1)
+                    self.assertTrue(widget.move_selected_to(0))
+                    wait_until(app, lambda: not window._auto_timer.isActive())
+                    self.assertTrue(widget.isEnabled())
+                    widget.setCurrentRow(3)
+                    self.assertTrue(widget.move_selected_to(1))
+                    latest = widget.ordered_ids()
+                    self.assertEqual(latest, tuple("BDACEF"))
+                    native.hold.clear()
+                    release_probe.set()
+                    wait_until(app, native.applying.is_set)
+                self.assertEqual(native.applies, 0)
+                widget.setCurrentRow(4)
+                self.assertTrue(widget.move_selected_to(2))
+                widget.difficulty_requested.emit(("E",), "중")
+                self.assertTrue(widget.isEnabled())
+                # Start dragging F while the previous save completes. Its
+                # acknowledgement must leave the in-progress drag untouched.
+                viewport = widget.viewport()
+                start = widget.visualItemRect(widget.item(5)).center()
+                end = widget.visualItemRect(widget.item(1)).center()
+                end.setY(widget.visualItemRect(widget.item(1)).top() + 2)
+                QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+                QTest.mouseMove(viewport, end)
+                self.assertIsNotNone(widget._drag_point)
+                native.hold.set()
+                wait_until(app, lambda: native.applies >= 1 and window.snapshot.order == latest)
+                self.assertEqual(widget.selected_ids(), ("F",))
+                self.assertIsNotNone(widget._drag_point)
+                QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+                self.assertEqual(widget.ordered_ids(), tuple("BFDEAC"))
+                wait_until(app, lambda: not window._busy and window.snapshot.order == tuple("BFDEAC"))
+                self.assertFalse(observer.disabled)
+                self.assertEqual(native.native_order, widget.ordered_ids())
+                self.assertEqual(widget.selected_ids(), ("F",))
+                self.assertEqual(native.focus_after_apply[0], "D")
+                self.assertEqual(native.focus_after_apply[-1], "F")
+                self.assertEqual(load_difficulties(path), {"E": "중"})
+            finally:
+                native.hold.set()
+                release_probe.set()
+                wait_until(app, lambda: not window._busy)
+                with patch.object(window, "_allow_discard", return_value=True):
+                    window.close()
+                    wait_until(app, lambda: window._live_thread is None)
+
     def test_direct_open_starts_in_editor_and_first_selection_is_editable(self):
         app = QApplication.instance() or QApplication([])
         with TemporaryDirectory() as folder:

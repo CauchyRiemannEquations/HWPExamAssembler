@@ -210,15 +210,12 @@ class LiveDocumentSession:
             shutil.copyfile(backup, staged)
             profile = self.service._numbering_profile_for(source)
             numbered = frozenset(snapshot.numbered_ids)
-            questions = []
+            captured = None
             metadata = self.service._import_metadata(source)
 
             def read_verified(manager, controls):
-                # Use the verification tab while it is open, so updating the
-                # list does not start another Hangul process on every drop.
-                questions.extend(self.service.read_open_questions(
-                    manager.hwp, manager, order, metadata, controls=controls
-                ))
+                nonlocal captured
+                captured = self.service.capture_verified_list(manager, order, controls, metadata, required=True)
 
             def reorder(worker):
                 return apply_reorder_transaction(
@@ -229,13 +226,14 @@ class LiveDocumentSession:
                 )
             audit = self._scratch_worker().run(reorder)
             final_hash = sha256(staged)
-            if tuple(q.id for q in questions) != order or final_hash != audit.after_sha256:
+            if (captured is None or captured.order != order or captured.content_sha256 != final_hash
+                    or final_hash != audit.after_sha256):
                 raise HwpAutomationError("재배열 사본의 문항 순서를 확인할 수 없습니다.")
             # User input stays available during the expensive native reorder.
-            # The short publication phase operates on the bound IXHwpDocument,
-            # preserving its DocumentID and HWND across both native Open calls.
+            # The short publication phase checks the bound tab's DocumentID
+            # and HWND before and after each native Open call.
             self._publish(staged, backup, before, final_hash, order, snapshot, checkpoint)
-            result = DocumentSnapshot(source, tuple(questions), content_sha256=final_hash)
+            result = replace(captured, path=source)
             self.service.remember_inspection(result, metadata)
             warnings = []
             if focus_qid in order:

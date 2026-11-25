@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+import pythoncom
+
 from app.hwp.application import HwpApplication, HwpAutomationError
 from app.hwp.fields import FIXED_FIELD_PREFIX, TERMINAL_FIELD, QuestionFieldManager, question_field
 from app.hwp.reorder import apply_permutation
@@ -16,6 +18,37 @@ from app.services.exam_service import ExamDocumentService, QuestionSummary
 
 
 class PublicEditorSpeedTests(unittest.TestCase):
+    def test_shell_reopen_uses_the_bound_active_tab_once_even_if_com_loses_the_result(self):
+        old, new = Path("original.hwpx").resolve(), Path("verified.hwpx").resolve()
+        link = UserDocument(old)
+        link.doc = SimpleNamespace(FullName=str(old), DocumentID=15, Modified=0)
+        link.doc_id, link.hwnd = 15, 30
+        link._documents = SimpleNamespace(Active_XHwpDocument=link.doc)
+        link._windows = SimpleNamespace(Active_XHwpWindow=SimpleNamespace(WindowHandle=30))
+        link._hwp = Mock()
+        link._hwp.Path = str(old)
+
+        def open_then_fault(path, fmt, options):
+            link.doc.FullName = path
+            link._hwp.Path = path
+            raise pythoncom.com_error(-2147417851, "server fault", None, None)
+
+        link._hwp.Open.side_effect = open_then_fault
+        with patch("win32gui.IsWindow", return_value=True):
+            link.reopen(old, new)
+            link._hwp.Open.assert_called_once_with(str(new), "HWPX", "skipcomment:true")
+            link._documents.Active_XHwpDocument = SimpleNamespace(FullName=str(new), DocumentID=16)
+            with self.assertRaises(HwpAutomationError):
+                link.reopen(new, old)
+            link._documents.Active_XHwpDocument = link.doc
+            link._hwp.Path = str(old)
+            with self.assertRaises(HwpAutomationError):
+                link.reopen(new, old)
+            self.assertEqual(link._hwp.Open.call_count, 1)
+            # Older object interfaces can omit Path; tab identity still applies.
+            del link._hwp.Path
+            link._require_file_action_target(new)
+
     def test_lost_com_collection_detaches_only_after_the_native_window_closes(self):
         link = UserDocument(Path("exam.hwp"))
         link.doc, link._documents, link.hwnd = object(), object(), 10

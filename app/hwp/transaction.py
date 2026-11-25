@@ -11,15 +11,12 @@ from collections.abc import Callable
 
 from app.hwp.application import HwpApplication, HwpAutomationError
 from app.hwp.fields import MissingPastedQuestion, QuestionFieldManager, question_field
-from app.hwp.numbering import (
-    NumberingStyleProfile,
-    capture_numbering_style,
-    numbering_styles_visually_equivalent,
-)
+from app.hwp.numbering import NumberingStyleProfile
 from app.hwp.reorder import (
     ReorderAudit,
     apply_permutation,
     create_timestamped_backup,
+    mismatched_numbering,
     numbered_field_targets,
     renumber_visible_questions,
 )
@@ -173,6 +170,7 @@ def apply_reorder_transaction(
             style=numbering_style,
             on_progress=on_progress,
             step_delay=step_delay,
+            reuse_numbering=True,
         )
         numbered_targets = numbered_field_targets(manager, numbered_question_ids)
         expected_layout = manager.block_layout()
@@ -199,15 +197,9 @@ def apply_reorder_transaction(
                 f"Reopened order mismatch: {reopened_order!r}; "
                 f"expected={requested_order!r}"
             )
-        for display_id, field_name in numbered_targets:
-            hwp.set_position(manager.position(field_name))
-            actual_style = capture_numbering_style(hwp)
-            if not numbering_styles_visually_equivalent(
-                numbering_style, actual_style
-            ):
-                raise HwpAutomationError(
-                    f"Numbering style mismatch after reopen: {display_id}"
-                )
+        mismatches = mismatched_numbering(manager, numbered_targets, numbering_style)
+        if mismatches:
+            raise HwpAutomationError(f"저장 후 문항 번호 또는 서식이 달라졌습니다: {mismatches[0][1]}")
         expected_question_controls = {
             question_id: question_controls_before[question_id]
             for question_id in requested_order
