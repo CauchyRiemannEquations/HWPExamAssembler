@@ -475,7 +475,7 @@ class QuestionFieldManager:
         destination_before_cut = self.block_boundary_position(destination_field)
         starts_paragraph = (destination_before_cut[0] == 0 and destination_before_cut[2] == 0
                             and destination_before_cut == self.anchor_position(destination_field))
-        self.select_question(question_id)
+        selection = self.select_question(question_id)
         if on_progress is not None:
             on_progress(f"{question_id} 문항 블록 선택")
         self.hwp.visual_step(step_delay)
@@ -492,16 +492,21 @@ class QuestionFieldManager:
         # A new list gesture can cancel at a progress callback. Finish the
         # entire clipboard transfer before allowing it to discard this tab.
         cut_order = tuple(qid for qid in order_before if qid != question_id)
+        # Reading a native saveblock can move focus into an embedded object.
+        # Restore the verified body range immediately before issuing Cut.
+        restored = self.hwp.select_position_range(selection[:3], selection[3:])
+        if restored != selection or self.field_names(selection_only=True) != expected_fields:
+            raise QuestionTransferMismatch(f"{question_id} 문항의 잘라낼 범위를 다시 확인할 수 없습니다.")
         self.hwp.cut_selection()
-        if self._order_after_transfer(order_before) != cut_order:
+        if self._wait_for_transfer_order(cut_order) != cut_order:
             raise QuestionTransferMismatch(f"{question_id} 문항만 잘라냈는지 확인할 수 없습니다.")
         destination_position = self._destination_after_cut(destination_field, starts_paragraph)
         self.hwp.set_position(destination_position)
         self.hwp.paste()
         self.hwp.visual_step(step_delay)
-        order_after = self._order_after_transfer(cut_order)
         expected_order = list(cut_order)
         expected_order.insert(insertion_index, question_id)
+        order_after = self._wait_for_transfer_order(tuple(expected_order))
         if order_after != tuple(expected_order):
             raise QuestionTransferMismatch(f"{question_id} 문항을 붙여넣은 뒤 순서가 요청과 다릅니다.")
         if on_progress is not None:
@@ -515,12 +520,12 @@ class QuestionFieldManager:
             selected_text_length=len(selected_text),
         )
 
-    def _order_after_transfer(self, previous: tuple[str, ...]) -> tuple[str, ...]:
-        # Hancom can update GetFieldList after the clipboard action returns.
+    def _wait_for_transfer_order(self, expected: tuple[str, ...]) -> tuple[str, ...]:
+        # GetFieldList can expose a partial update after the native action.
         self.invalidate_cache()
         order = self.ordered_question_ids()
         deadline = time.monotonic() + 1.5
-        while order == previous and time.monotonic() < deadline:
+        while order != expected and time.monotonic() < deadline:
             time.sleep(0.035)
             pythoncom.PumpWaitingMessages()
             self.invalidate_cache()

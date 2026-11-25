@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
 import os
@@ -84,12 +84,10 @@ class _ScratchWorker:
         # subsequent real operation will retry and can report a relevant error.
         self._executor.submit(self._start)
 
-    def run(self, action, *, on_wait=None):
-        future = self._executor.submit(self._run, action)
-        if on_wait is not None:
-            while not wait((future,), timeout=0.05).done:
-                on_wait()
-        return future.result()
+    def run(self, action):
+        # The owner apartment must not move the visible caret while the private
+        # Hangul instance is selecting, cutting or pasting a question.
+        return self._executor.submit(self._run, action).result()
 
     def _run(self, action):
         self._start()
@@ -207,7 +205,7 @@ class LiveDocumentSession:
             return questions
         return self._scratch_worker().run(read)
 
-    def _verify_live_copy(self, payload, baseline, checkpoint, on_wait=None):
+    def _verify_live_copy(self, payload, baseline, checkpoint):
         """Keep a memory export only if Hancom reopens it as the same native document."""
         if not payload:
             return False
@@ -231,7 +229,7 @@ class LiveDocumentSession:
             return matched
 
         try:
-            return self._scratch_worker().run(verify, on_wait=on_wait)
+            return self._scratch_worker().run(verify)
         except Exception:
             # Some Hancom versions/layouts cannot round-trip the memory format.
             # Preserve those edits through the original native format instead.
@@ -298,8 +296,8 @@ class LiveDocumentSession:
             if qid is None or qid == shown:
                 return
             try:
-                # This runs on the owner STA. Never activate a different tab or
-                # interrupt an open native dialog while scratch work proceeds.
+                # Call only between scratch operations on the owner apartment.
+                # Never activate a different tab or interrupt a native dialog.
                 target.require_target()
                 if target.input_available():
                     self._show_question(QuestionFieldManager(target), qid)
@@ -330,8 +328,11 @@ class LiveDocumentSession:
                 else:
                     shutil.copyfile(source, baseline)
 
-            live_copy = dirty and self._verify_live_copy(payload, baseline, checkpoint,
-                                                         follow_focus if live_updates else None)
+            live_copy = False
+            if dirty:
+                follow_focus()
+                live_copy = self._verify_live_copy(payload, baseline, checkpoint)
+                follow_focus()
             if dirty and not live_copy:
                 if batch.latest()[0] == snapshot.order:
                     batch.wait_until_idle()
@@ -356,7 +357,8 @@ class LiveDocumentSession:
             audit = None
             while True:
                 batch.wait_until_idle()
-                order, focus_qid = batch.latest()
+                follow_focus()
+                order, _ = batch.latest()
                 if order == snapshot.order:
                     # Undoing all moves requires no native reopen, backup, or
                     # original-file write. Detect external changes as usual.
@@ -370,9 +372,9 @@ class LiveDocumentSession:
                 if captured is None or captured.order != order:
                     shutil.copyfile(baseline, staged)
                     captured, audit = self._stage_order(
-                        staged, snapshot, order, batch, before, profile, metadata,
-                        follow_focus if live_updates else None,
+                        staged, snapshot, order, batch, before, profile, metadata, live_updates,
                     )
+                    follow_focus()
                     if captured is None:
                         continue
                     batch.wait_until_idle()
@@ -406,7 +408,7 @@ class LiveDocumentSession:
             if still_on_source:
                 shutil.rmtree(directory, ignore_errors=True)
 
-    def _stage_order(self, staged, snapshot, order, batch, before, profile, metadata, follow_focus):
+    def _stage_order(self, staged, snapshot, order, batch, before, profile, metadata, live_updates):
         captured = None
         numbered = frozenset(snapshot.numbered_ids)
 
@@ -426,7 +428,7 @@ class LiveDocumentSession:
                         worker, staged, order, tuple(qid for qid in order if qid in numbered),
                         numbering_style=profile, backup_dir=Path(attempt) / "backup", work_dir=attempt,
                         allow_deletions=True, expected_sha256=before, on_verified=read_verified,
-                        expected_order=snapshot.order, on_progress=check_order if follow_focus else None,
+                        expected_order=snapshot.order, on_progress=check_order if live_updates else None,
                         focus_qid=batch.latest()[1],
                     )
                 except _OrderChanged:
@@ -434,8 +436,7 @@ class LiveDocumentSession:
                     # tab. Keep the warm scratch server for the latest order.
                     return None
 
-        scratch = self._scratch_worker()
-        audit = scratch.run(reorder, on_wait=follow_focus) if follow_focus else scratch.run(reorder)
+        audit = self._scratch_worker().run(reorder)
         if audit is None:
             return None, None
         final_hash = sha256(staged)

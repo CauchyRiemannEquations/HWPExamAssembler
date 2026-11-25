@@ -1,15 +1,17 @@
 """Live batch boundaries across the native buffer, recoverable backup and disk."""
 from contextlib import nullcontext
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, get_ident
 import unittest
 from unittest.mock import Mock, patch
 
 from app.hwp.application import HwpAutomationError
 from app.hwp.transaction import sha256
 from app.services.exam_service import DocumentSnapshot, QuestionSummary
-from app.services.live_document import LiveDocumentSession, LiveOrderBatch
+from app.services.live_document import LiveDocumentSession, LiveOrderBatch, _ScratchWorker
 
 
 @dataclass
@@ -103,6 +105,48 @@ class LiveBatchTest(unittest.TestCase):
         self.assertEqual(len(self.opens), 2)
         self.assertEqual(self.backups(), [b"ABC;disk"])
         self.assertFalse(self.batch.update(self.original, "A"))
+
+    def test_visible_preview_follows_concurrent_input_between_private_attempts(self):
+        scratch = _ScratchWorker()
+        scratch._hwp = Mock()
+        self.addCleanup(scratch.close)
+        self.enterContext(patch.object(self.session, "_scratch_worker", return_value=scratch))
+        private_active, ui_moved, overlap = Event(), Event(), Event()
+        previews = []
+        owner_thread = get_ident()
+
+        def preview(manager, qid):
+            self.assertEqual(get_ident(), owner_thread)
+            if private_active.is_set():
+                overlap.set()
+            previews.append(qid)
+
+        def private_checkpoint():
+            if self.attempts == [self.first]:
+                private_active.set()
+                try:
+                    self.assertTrue(ui_moved.wait(2))
+                    # Keep the native operation open across several UI ticks.
+                    self.assertFalse(overlap.wait(0.18))
+                finally:
+                    private_active.clear()
+            else:
+                self.assertEqual(previews[-1], "C")
+
+        def next_move():
+            self.assertTrue(private_active.wait(2))
+            self.assertTrue(self.batch.update(self.final, "C"))
+            ui_moved.set()
+
+        self.after_verify = private_checkpoint
+        self.enterContext(patch.object(self.session, "_show_question", side_effect=preview))
+        with ThreadPoolExecutor(max_workers=1) as ui:
+            submitted = ui.submit(next_move)
+            self.assertEqual(self.apply().order, self.final)
+            submitted.result()
+        self.assertEqual(self.attempts, [self.first, self.final])
+        self.assertEqual(len(self.opens), 2)
+        self.assertEqual(self.backups(), [b"ABC;disk"])
 
     def test_undo_after_verification_preserves_unsaved_native_buffer(self):
         self.dirty_copy()

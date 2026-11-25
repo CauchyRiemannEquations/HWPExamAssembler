@@ -26,14 +26,31 @@ class PublicEditorSpeedTests(unittest.TestCase):
         native.automation.GetFieldList.side_effect = lambda _number, flags: (
             question_field("B") if flags & 4 else "\x02".join(fields)
         )
-        native.cut_selection.side_effect = lambda: fields.remove(question_field("B"))
+        selected = (0, 5, 0, 0, 8, 0)
+        native.select_position_range.return_value = selected
+        def read_saveblock():
+            native.select_position_range.reset_mock()
+            return "body"
+        def cut_reselected_block():
+            native.select_position_range.assert_called_once_with(selected[:3], selected[3:])
+            fields.remove(question_field("B"))
+        native.cut_selection.side_effect = cut_reselected_block
         native.paste.side_effect = lambda: fields.insert(0, question_field("B"))
-        native.selected_plain_text.return_value = "body"
+        native.selected_plain_text.side_effect = read_saveblock
         observed = []
         with (patch.object(manager, "block_boundary_position", return_value=(0, 3, 1)),
-              patch.object(manager, "select_question")):
+              patch.object(manager, "select_question", return_value=selected)):
             manager.move_before("B", "A", on_progress=lambda _msg: observed.append(fields.copy()))
         self.assertEqual(observed, [original, original, list(reversed(original))])
+
+    def test_cut_waits_until_partial_native_field_updates_settle(self):
+        manager = QuestionFieldManager(Mock())
+        target = ("A", "C")
+        with (patch.object(manager, "ordered_question_ids", side_effect=[("A",), target]),
+              patch("app.hwp.fields.time.sleep"),
+              patch("app.hwp.fields.pythoncom.PumpWaitingMessages") as pump):
+            self.assertEqual(manager._wait_for_transfer_order(target), target)
+            pump.assert_called_once()
 
     def test_second_incorrect_native_transfer_stops_without_writing_the_original(self):
         native = Mock()
