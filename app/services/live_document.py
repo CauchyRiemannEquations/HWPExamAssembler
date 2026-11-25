@@ -434,7 +434,7 @@ class LiveDocumentSession:
                         numbering_style=profile, backup_dir=Path(attempt) / "backup", work_dir=attempt,
                         allow_deletions=True, expected_sha256=before, on_verified=read_verified,
                         expected_order=snapshot.order, on_progress=check_order if live_updates else None,
-                        focus_qid=batch.latest()[1],
+                        focus_qid=batch.latest()[1], prefer_whole_paragraphs=live_updates,
                     )
                 except _OrderChanged:
                     # The transaction has discarded its private native

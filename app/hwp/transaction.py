@@ -76,6 +76,7 @@ def apply_reorder_transaction(
     expected_sha256: str | None = None,
     expected_order: tuple[str, ...] | None = None,
     focus_qid: str | None = None,
+    prefer_whole_paragraphs: bool = False,
     on_verified: Callable[[QuestionFieldManager, dict[str, dict[str, int]]], None] | None = None,
 ) -> ReorderTransactionAudit:
     """Apply reorder and numbering atomically to an existing editable copy.
@@ -150,8 +151,21 @@ def apply_reorder_transaction(
                 raise HwpAutomationError(
                     f"문항 삭제 후 순서 검증 실패: {question_id}"
                 )
+        paragraph_order = False
+        if prefer_whole_paragraphs and not deleted_question_ids and initial_order != requested_order:
+            from .whole_paragraphs import open_verified_paragraph_order
+
+            if on_progress is not None:
+                on_progress("문항 단위로 정렬한 사본 확인")
+            paragraph_order = open_verified_paragraph_order(
+                manager, backup, working, runtime_dir / "paragraphs" / working.name, requested_order, on_progress,
+            )
+            manager = QuestionFieldManager(hwp)
         try:
-            reorder = apply_permutation(manager, requested_order, on_progress=on_progress, step_delay=step_delay)
+            if paragraph_order:
+                reorder = ReorderAudit(initial_order, requested_order, requested_order, (), method="paragraphs")
+            else:
+                reorder = apply_permutation(manager, requested_order, on_progress=on_progress, step_delay=step_delay)
         except QuestionTransferMismatch as first:
             if deleted_question_ids:
                 raise

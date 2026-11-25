@@ -23,12 +23,14 @@ class ReorderAudit:
     requested_order: tuple[str, ...]
     order_after: tuple[str, ...]
     moves: tuple[MoveAudit, ...]
+    method: str = "native"
 
     def to_dict(self) -> dict[str, object]:
         return {
             "order_before": list(self.order_before),
             "requested_order": list(self.requested_order),
             "order_after": list(self.order_after),
+            "method": self.method,
             "moves": [asdict(move) for move in self.moves],
         }
 
