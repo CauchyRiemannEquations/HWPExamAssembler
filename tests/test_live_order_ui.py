@@ -68,6 +68,7 @@ class NativeWindow:
         self.applies = 0
         self.releases = 0
         self.visits = []
+        self.passive_visits = []
         self.focus_after_apply = []
         self.hold = threading.Event()
         self.hold.set()
@@ -101,9 +102,9 @@ class NativeWindow:
         self.check_thread()
         return "closed" if self.closed else "active" if self.active else "inactive"
 
-    def navigate(self, qid):
+    def navigate(self, qid, activate=True):
         self.check_thread()
-        self.visits.append(qid)
+        (self.visits if activate else self.passive_visits).append(qid)
 
     def refresh(self, expected):
         self.check_thread()
@@ -455,6 +456,43 @@ class AutomaticOrderTest(unittest.TestCase):
                 wait_until(app, lambda: not window._busy and not window._dirty_order())
                 self.assertEqual(native.native_order, tuple("FCBDEA"))
                 self.assertEqual(native.focus_after_apply, ["F", "C"])
+
+                # After F's order is sealed, move B and undo it. The final
+                # order needs one save; the native caret should still follow B.
+                native.claimed.clear()
+                native.publish.clear()
+                widget.setCurrentRow(0)
+                widget.move_current(1)
+                wait_until(app, native.claimed.is_set)
+                widget.setCurrentRow(2)
+                widget.move_current(1)
+                window.undo_button.click()
+                navigation_started, finish_navigation = threading.Event(), threading.Event()
+                native_navigate = native.navigate
+                def hold_navigation(qid, activate=True):
+                    navigation_started.set()
+                    assert finish_navigation.wait(3)
+                    native_navigate(qid, activate)
+                with patch.object(native, "navigate", side_effect=hold_navigation):
+                    native.publish.set()
+                    wait_until(app, navigation_started.is_set)
+                    self.assertEqual(native.native_order, tuple("CFBDEA"))
+                    self.assertEqual(native.focus_after_apply, ["F", "C", "F"])
+                    self.assertEqual(widget.selected_ids(), ("B",))
+                    self.assertTrue(widget.isEnabled())
+                    # Drag E across the late caret acknowledgement, then undo
+                    # before autosave. Only the caret should need another move.
+                    start = widget.visualItemRect(widget.item(4)).center()
+                    end = widget.visualItemRect(widget.item(1)).center()
+                    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+                    QTest.mouseMove(viewport, end)
+                    finish_navigation.set()
+                    wait_until(app, lambda: native.passive_visits == ["B"] and not window._busy)
+                    self.assertTrue(widget.move_in_progress)
+                    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+                window.undo_button.click()
+                wait_until(app, lambda: native.passive_visits == ["B", "E"] and not window._busy)
+                self.assertEqual(native.applies, 3)
             finally:
                 native.hold.set()
                 release_probe.set()

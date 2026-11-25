@@ -159,11 +159,16 @@ class LiveDocumentSession:
                 raise HwpAutomationError("공통 지문에 속한 문항이 달라져 반영할 수 없습니다.")
         return fields
 
-    def navigate(self, qid):
+    def navigate(self, qid, activate=True):
         target = self.target
         if not target:
             raise HwpAutomationError("한글 편집본을 먼저 연결하세요.")
-        target.show_target()
+        if activate:
+            target.show_target()
+        else:
+            target.require_target()
+            if not target.input_available():
+                raise HwpAutomationError("한글 대화상자를 먼저 닫아 주세요.")
         if qid:
             manager = QuestionFieldManager(target)
             if qid not in manager.ordered_question_ids():

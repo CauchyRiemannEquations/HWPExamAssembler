@@ -507,8 +507,12 @@ class MainWindow(QMainWindow):
             self._auto_timer.start(MOVE_SETTLE_MS)
             return
         self._auto_pending = False
-        if (not self._dirty_order() or self._deletions_pending() or self._sync_failed
-                or self._live_issue or self._native_order_conflict):
+        if self._deletions_pending() or self._sync_failed or self._live_issue or self._native_order_conflict:
+            return
+        if not self._dirty_order():
+            # A move and undo can finish within one debounce interval.
+            if self._editing_in_hwp and self._move_anchor in self._original_order:
+                self._request_companion("navigate", self._move_anchor, False)
             return
         if self._editing_in_hwp:
             self._apply_live_order()
@@ -564,7 +568,12 @@ class MainWindow(QMainWindow):
             self._request_companion("probe")
 
     def _live_completed(self, operation, result) -> None:
+        follow_qid = None
         if operation == "apply":
+            if self._live_batch is not None and self._move_anchor != self._live_batch.latest()[1]:
+                # Later moves can return to the published order with a
+                # different last question after the batch has been sealed.
+                follow_qid = self._move_anchor
             self._live_batch = None
         if self._closing:
             self._live_operation = None
@@ -629,6 +638,8 @@ class MainWindow(QMainWindow):
                     return
             if operation == "apply" and not self._dirty_order():
                 self.status_label.setText("열려 있는 한글 문서에 순서를 반영했습니다.")
+                if follow_qid in self._original_order:
+                    self._request_companion("navigate", follow_qid, False)
             elif operation == "apply" and not self._deletions_pending():
                 self.status_label.setText("다음 이동도 저장합니다. 계속 편집하세요.")
             elif operation != "apply" and not self._native_order_conflict:
