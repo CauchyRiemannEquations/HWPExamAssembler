@@ -18,6 +18,18 @@ from app.services.exam_service import ExamDocumentService, QuestionSummary
 
 
 class PublicEditorSpeedTests(unittest.TestCase):
+    def test_cut_uses_new_field_location_only_if_the_paragraph_still_starts_with_it(self):
+        native = Mock()
+        manager = QuestionFieldManager(native)
+        marker = question_field("Q003")
+        native.current_position.side_effect = [(0, 12, 8), (0, 14, 16), (3, 2, 8)]
+        with patch.object(manager, "block_boundary_position", return_value=(0, 10, 25)) as scan:
+            self.assertEqual(manager._destination_after_cut(marker, True), (0, 12, 0))
+            scan.assert_not_called()
+            for starts_paragraph in (True, True, False):
+                self.assertEqual(manager._destination_after_cut(marker, starts_paragraph), (0, 10, 25))
+            self.assertEqual(scan.call_count, 3)
+
     def test_shell_reopen_uses_the_bound_active_tab_once_even_if_com_loses_the_result(self):
         old, new = Path("original.hwpx").resolve(), Path("verified.hwpx").resolve()
         link = UserDocument(old)

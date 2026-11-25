@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtCore import QItemSelectionModel, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
         self.question_list.setAccessibleName("문항 순서와 난이도")
         self.question_list.difficulty_requested.connect(self._save_difficulty)
         self.question_list.order_changed.connect(self._order_edited)
+        self.question_list.move_interaction_changed.connect(self._move_interaction_changed)
         self.question_list.itemSelectionChanged.connect(self._sync_difficulty_combo)
         layout.addWidget(self.question_list, 1)
 
@@ -443,7 +444,6 @@ class MainWindow(QMainWindow):
         worker.progress.connect(self._show_progress)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         thread.finished.connect(self._worker_finished)
         self._thread = thread
         self._worker = worker
@@ -463,6 +463,7 @@ class MainWindow(QMainWindow):
         self._after_probe = None
         self._closing = False
         self._applying_order = None
+        self._live_batch = None
         self._move_anchor = None
         self._auto_pending = False
         self._auto_timer = QTimer(self)
@@ -474,6 +475,15 @@ class MainWindow(QMainWindow):
 
     def _schedule_order_sync(self, anchor) -> None:
         self._move_anchor = anchor
+        if self._live_batch is not None and not self._deletions_pending():
+            order = self.question_list.ordered_ids()
+            if self._live_batch.update(order, anchor):
+                # The private copy can still change. The worker will return
+                # the actual published order, including an undo to the baseline.
+                self._applying_order = order
+                self._auto_pending = False
+                self._auto_timer.stop()
+                return
         if self._live_issue or self._native_order_conflict or self._sync_failed:
             # Keep subsequent gestures in the draft until a failed save is
             # explicitly retried or the native document has been re-read.
@@ -483,8 +493,15 @@ class MainWindow(QMainWindow):
         self._auto_pending = True
         self._auto_timer.start(MOVE_SETTLE_MS)
 
+    def _move_interaction_changed(self, active: bool) -> None:
+        if self._live_batch is not None:
+            self._live_batch.set_editing(active)
+        if not active and self._auto_pending and not self._auto_timer.isActive() and not self._busy:
+            self._auto_timer.start(0)
+
     def _sync_moved_order(self) -> None:
-        if not self._auto_pending or self._closing or self._busy or self._live_operation == "probe":
+        if (not self._auto_pending or self._closing or self._busy or self._live_operation == "probe"
+                or self.question_list.move_in_progress):
             return
         if QApplication.activeModalWidget() is not None:
             self._auto_timer.start(MOVE_SETTLE_MS)
@@ -511,11 +528,15 @@ class MainWindow(QMainWindow):
         worker.stopped.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(self._companion_stopped)
-        thread.finished.connect(thread.deleteLater)
         self._live_thread, self._live_worker = thread, worker
         thread.start()
 
+    @Slot()
     def _companion_stopped(self) -> None:
+        # Windows thread-local destruction can outlive QThread.finished.
+        # Join before the last window closes and Python starts tearing down.
+        self._live_thread.wait()
+        self._live_thread.deleteLater()
         self._live_thread = None
         self._live_worker = None
         if self._closing:
@@ -543,6 +564,8 @@ class MainWindow(QMainWindow):
             self._request_companion("probe")
 
     def _live_completed(self, operation, result) -> None:
+        if operation == "apply":
+            self._live_batch = None
         if self._closing:
             self._live_operation = None
             return
@@ -568,6 +591,7 @@ class MainWindow(QMainWindow):
                 self._auto_pending = False
                 self._auto_timer.stop()
                 self._applying_order = None
+                self._live_batch = None
                 self._editing_in_hwp = False
                 self._draft_on_close = self._dirty_order()
                 self._hwp_timer.stop()
@@ -621,6 +645,7 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"[순서 반영 후 안내] {details}")
 
     def _live_failed(self, operation: str, details: str) -> None:
+        self._live_batch = None
         self._live_operation = None
         self._apply_on_connect = False
         deferred, self._after_probe = self._after_probe, None
@@ -651,7 +676,14 @@ class MainWindow(QMainWindow):
         self.status_label.setText("문항 삭제를 한글에 반영하는 중…" if self._deletions_pending()
                                   else "한글에 저장 중 · 다음 문항을 옮길 수 있습니다.")
         anchor = self._move_anchor if self._move_anchor in self._applying_order else self._current_qid()
-        self._request_companion("apply", self.snapshot, self._applying_order, anchor)
+        if self._deletions_pending():
+            self._request_companion("apply", self.snapshot, self._applying_order, anchor)
+        else:
+            from app.services.live_document import LiveOrderBatch
+
+            self._live_batch = LiveOrderBatch(self._applying_order, anchor)
+            self._live_batch.set_editing(self.question_list.move_in_progress)
+            self._request_companion("apply", self.snapshot, self._applying_order, anchor, self._live_batch)
 
     def _confirm_current_order(self) -> bool:
         if not self._native_order_conflict:
@@ -1023,7 +1055,10 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"[ERROR] {details}")
         QMessageBox.critical(self, "작업 실패", summary)
 
+    @Slot()
     def _worker_finished(self) -> None:
+        self._thread.wait()
+        self._thread.deleteLater()
         self._thread = None
         self._worker = None
         self._set_busy(False)

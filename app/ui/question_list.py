@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QItemSelectionModel, QModelIndex, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QInputDialog, QListWidget, QListWidgetItem, QMenu
@@ -14,6 +14,7 @@ from .question_row import LEVEL_ROLE, NUMBER_ROLE, QUESTION_ROLE, QuestionRowDel
 
 class QuestionListWidget(QListWidget):
     order_changed = Signal()
+    move_interaction_changed = Signal(bool)
     difficulty_requested = Signal(object, str)
 
     def __init__(self, parent=None) -> None:
@@ -30,6 +31,8 @@ class QuestionListWidget(QListWidget):
         self.setStyleSheet("QListWidget { padding: 0px; border: 1px solid #dce4e9; background: white; }"
                            "QListWidget::item { padding: 0px; }")
         self._pressed_control = None
+        self.move_in_progress = False
+        self._picking_position = False
         self._drag_origin = None
         self._drag_point = None
         self._preserved_selection = False
@@ -78,6 +81,7 @@ class QuestionListWidget(QListWidget):
             hit = self._control_at(event.position().toPoint())
             if hit:
                 self._pressed_control = hit
+                self._set_move_interaction(hit[1] == "position")
                 self._choose_item(hit[0])
                 event.accept()
                 return
@@ -85,6 +89,7 @@ class QuestionListWidget(QListWidget):
             item = self.itemAt(point)
             if item:
                 self._drag_origin = point
+                self._set_move_interaction(True)
                 if item.isSelected() and len(self.selectedItems()) > 1:
                     self._choose_item(item)
                     self._preserved_selection = True
@@ -121,24 +126,31 @@ class QuestionListWidget(QListWidget):
         hit = self._pressed_control
         self._pressed_control = None
         if hit:
-            if hit == self._control_at(event.position().toPoint()):
-                if hit[1] == "position":
-                    self.request_position()
-                else:
-                    self.difficulty_requested.emit(self.selected_ids(), hit[1])
+            try:
+                if hit == self._control_at(event.position().toPoint()):
+                    if hit[1] == "position":
+                        self.request_position()
+                    else:
+                        self.difficulty_requested.emit(self.selected_ids(), hit[1])
+            finally:
+                self._set_move_interaction(False)
             event.accept()
             return
         if self._drag_point is not None:
             point = event.position().toPoint()
             boundary = self._boundary_at(point)
-            self._end_drag()
-            if self.viewport().rect().contains(point):
-                final_row = boundary - sum(row < boundary for row in self._selected_rows())
-                self.move_selected_to(final_row)
+            try:
+                if self.viewport().rect().contains(point):
+                    final_row = boundary - sum(row < boundary for row in self._selected_rows())
+                    self.move_selected_to(final_row)
+            finally:
+                self._end_drag()
+                self._set_move_interaction(False)
             event.accept()
             return
         preserved = self._preserved_selection
         self._end_drag()
+        self._set_move_interaction(False)
         if preserved and self.currentItem():
             self.setCurrentItem(self.currentItem(), QItemSelectionModel.SelectionFlag.ClearAndSelect)
             event.accept()
@@ -154,6 +166,7 @@ class QuestionListWidget(QListWidget):
     def keyPressEvent(self, event):
         if self._drag_origin is not None and event.key() == Qt.Key.Key_Escape:
             self._end_drag()
+            self._set_move_interaction(False)
             event.accept()
             return
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_M:
@@ -169,11 +182,30 @@ class QuestionListWidget(QListWidget):
         selected = self.selected_ids()
         label = "최종 배치 위치" if len(rows) == 1 else f"선택한 {len(rows)}개 항목의 첫 번째 위치"
         last_position = self.count() - len(rows) + 1
-        position, accepted = QInputDialog.getInt(
-            self, "문항 이동", f"{label} (1~{last_position})", rows[0] + 1, 1, last_position
-        )
-        if accepted and self.isEnabled() and self.selected_ids() == selected:
-            self.move_selected_to(position - 1)
+        self._picking_position = True
+        self._set_move_interaction(True)
+        try:
+            position, accepted = QInputDialog.getInt(
+                self, "문항 이동", f"{label} (1~{last_position})", rows[0] + 1, 1, last_position
+            )
+            if accepted and self.isEnabled() and self.selected_ids() == selected:
+                self.move_selected_to(position - 1)
+        finally:
+            self._picking_position = False
+            self._set_move_interaction(False)
+
+    def _set_move_interaction(self, active):
+        if self.move_in_progress != active:
+            self.move_in_progress = active
+            self.move_interaction_changed.emit(active)
+
+    def event(self, event):
+        if (event.type() in (QEvent.Type.WindowDeactivate, QEvent.Type.Hide)
+                and self.move_in_progress and not self._picking_position):
+            self._pressed_control = None
+            self._end_drag()
+            self._set_move_interaction(False)
+        return super().event(event)
 
     def set_difficulties(self, values: dict[str, str]) -> None:
         if values == self.difficulties:

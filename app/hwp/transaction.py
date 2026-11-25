@@ -74,6 +74,7 @@ def apply_reorder_transaction(
     allow_deletions: bool = False,
     expected_sha256: str | None = None,
     expected_order: tuple[str, ...] | None = None,
+    focus_qid: str | None = None,
     on_verified: Callable[[QuestionFieldManager, dict[str, dict[str, int]]], None] | None = None,
 ) -> ReorderTransactionAudit:
     """Apply reorder and numbering atomically to an existing editable copy.
@@ -181,6 +182,9 @@ def apply_reorder_transaction(
         # and publish exactly that file.
         saved_copy = runtime_dir / "saved" / working.name
         saved_copy.parent.mkdir()
+        if focus_qid in requested_order:
+            # Both native reopens can display this position immediately.
+            manager.focus_field(question_field(focus_qid))
         hwp.save_exam_copy(saved_copy)
         hwp.reset_documents()
 

@@ -170,8 +170,7 @@ def set_visible_field_number(
     if number < 1:
         raise ValueError("Visible question numbers must be positive")
     hwp = manager.hwp
-    position = manager.position(field_name)
-    hwp.set_position(position)
+    manager.focus_field(field_name)
     if style is not None:
         apply_numbering_style(hwp, style, number=number)
         return
@@ -296,7 +295,7 @@ def mismatched_numbering(
                 # A previously independent list changed while numbering its neighbours.
                 failures.append((number, display_id, name))
                 continue
-            manager.hwp.set_position(manager.position(name))
+            manager.focus_field(name)
             start, actual = capture_number_and_style(manager.hwp)
             matches = start == number and numbering_styles_visually_equivalent(style, actual)
         elif definition.start != number:
@@ -304,7 +303,7 @@ def mismatched_numbering(
         else:
             key = definition.appearance
             if key not in styles:
-                manager.hwp.set_position(manager.position(name))
+                manager.focus_field(name)
                 styles[key] = numbering_styles_visually_equivalent(style, capture_numbering_style(manager.hwp))
             matches = styles[key]
         if not matches:

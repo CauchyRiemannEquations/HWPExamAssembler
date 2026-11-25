@@ -202,10 +202,17 @@ class QuestionFieldManager:
                 question.start_marker, question_field(question.id)
             )
 
-    def position(self, name: str) -> tuple[int, int, int]:
-        moved = self.hwp.automation.MoveToField(name, False, True, False)
-        if not moved:
+    def _move_to_field(self, name: str) -> None:
+        if not self.hwp.automation.MoveToField(name, False, True, False):
             raise HwpAutomationError(f"Cannot move to field: {name}")
+
+    def focus_field(self, name: str) -> None:
+        """Position the caret at a named field without extending a selection."""
+        self.hwp.automation.Run("Cancel")
+        self._move_to_field(name)
+
+    def position(self, name: str) -> tuple[int, int, int]:
+        self._move_to_field(name)
         return self.hwp.current_position()
 
     def anchor_position(self, name: str) -> tuple[int, int, int]:
@@ -465,6 +472,9 @@ class QuestionFieldManager:
             insertion_index = remaining.index(destination_id) if destination_id is not None else len(remaining)
             destination_field = question_field(destination_id) if destination_id is not None else TERMINAL_FIELD
 
+        destination_before_cut = self.block_boundary_position(destination_field)
+        starts_paragraph = (destination_before_cut[0] == 0 and destination_before_cut[2] == 0
+                            and destination_before_cut == self.anchor_position(destination_field))
         self.select_question(question_id)
         if on_progress is not None:
             on_progress(f"{question_id} 문항 블록 선택")
@@ -482,7 +492,7 @@ class QuestionFieldManager:
         if on_progress is not None:
             on_progress(f"{question_id} 문항 잘라내기")
 
-        destination_position = self.block_boundary_position(destination_field)
+        destination_position = self._destination_after_cut(destination_field, starts_paragraph)
         self.hwp.set_position(destination_position)
         self.hwp.paste()
         self.invalidate_cache()
@@ -516,3 +526,16 @@ class QuestionFieldManager:
             selected_fields=selected_fields,
             selected_text_length=len(selected_text),
         )
+
+    def _destination_after_cut(self, field: str, starts_paragraph: bool) -> tuple[int, int, int]:
+        if starts_paragraph:
+            # Locate the field again: cutting earlier paragraphs changes their
+            # indices. Its eight-position control must still be first in the body
+            # paragraph. A merged paragraph or a leading object uses the full scan.
+            try:
+                lst, para, pos = self.position(field)
+                if lst == 0 and pos == 8:
+                    return (0, para, 0)
+            except HwpAutomationError:
+                pass
+        return self.block_boundary_position(field)

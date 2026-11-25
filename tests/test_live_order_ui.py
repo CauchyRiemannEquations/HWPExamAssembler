@@ -72,6 +72,10 @@ class NativeWindow:
         self.hold = threading.Event()
         self.hold.set()
         self.applying = threading.Event()
+        self.ready_to_claim = threading.Event()
+        self.claimed = threading.Event()
+        self.publish = threading.Event()
+        self.publish.set()
         self.native_order = ()
         self.text = {}
         self.worker_thread = None
@@ -107,7 +111,7 @@ class NativeWindow:
         questions = tuple(replace(by_id[qid], preview=self.text.get(qid, by_id[qid].preview)) for qid in self.native_order)
         return DocumentSnapshot(expected.path, questions, content_sha256=None)
 
-    def apply(self, expected, requested, focus_qid):
+    def apply(self, expected, requested, focus_qid, batch=None):
         self.check_thread()
         self.applying.set()
         assert self.hold.wait(3)
@@ -115,6 +119,17 @@ class NativeWindow:
             raise ValueError("연결된 문서 탭으로 돌아와 주세요.")
         if self.native_order != expected.order:
             raise ValueError("한글에서도 순서가 바뀌었습니다.")
+        self.ready_to_claim.set()
+        if batch is not None:
+            while True:
+                batch.wait_until_idle()
+                requested, focus_qid = batch.latest()
+                if batch.claim(requested):
+                    break
+        self.claimed.set()
+        assert self.publish.wait(3)
+        if requested == expected.order:
+            return expected
         self.applies += 1
         self.focus_after_apply.append(focus_qid)
         self.native_order = requested
@@ -182,15 +197,25 @@ def exercise_live_editor():
         window.undo_button.click()
         assert "Q20" not in window.question_list.difficulties
 
-        # Undo to the old baseline while that move is still publishing. Both
-        # native writes must finish in order, without discarding the later undo.
+        # Undo before the publication claim needs no native write at all.
         native.applying.clear()
         native.hold.clear()
         assert window.question_list.move_current(-1)
-        wait_until(application, lambda: native.applying.is_set())
-        assert window.question_list.isEnabled()
+        wait_until(application, native.applying.is_set)
         window.undo_button.click()
         native.hold.set()
+        wait_until(application, lambda: settled() and not window._dirty_order())
+        assert native.applies == 3 and native.native_order == window.snapshot.order
+
+        # Undo to the old baseline while that move is still publishing. Both
+        # native writes must finish in order, without discarding the later undo.
+        native.claimed.clear()
+        native.publish.clear()
+        assert window.question_list.move_current(-1)
+        wait_until(application, native.claimed.is_set)
+        assert window.question_list.isEnabled()
+        window.undo_button.click()
+        native.publish.set()
         wait_until(application, lambda: settled() and native.applies == 5 and not window._dirty_order())
         assert native.native_order == window.question_list.ordered_ids()
         assert window.question_list.move_current(-1)
@@ -382,8 +407,8 @@ class AutomaticOrderTest(unittest.TestCase):
                 self.assertTrue(widget.move_selected_to(2))
                 widget.difficulty_requested.emit(("E",), "중")
                 self.assertTrue(widget.isEnabled())
-                # Start dragging F while the previous save completes. Its
-                # acknowledgement must leave the in-progress drag untouched.
+                # While F is being dragged the worker cannot publish E's
+                # earlier order. Dropping F publishes the whole burst once.
                 viewport = widget.viewport()
                 start = widget.visualItemRect(widget.item(5)).center()
                 end = widget.visualItemRect(widget.item(1)).center()
@@ -392,7 +417,9 @@ class AutomaticOrderTest(unittest.TestCase):
                 QTest.mouseMove(viewport, end)
                 self.assertIsNotNone(widget._drag_point)
                 native.hold.set()
-                wait_until(app, lambda: native.applies >= 1 and window.snapshot.order == latest)
+                wait_until(app, native.ready_to_claim.is_set)
+                self.assertFalse(native.claimed.wait(0.15))
+                self.assertEqual(native.native_order, tuple("ABCDEF"))
                 self.assertEqual(widget.selected_ids(), ("F",))
                 self.assertIsNotNone(widget._drag_point)
                 QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
@@ -401,9 +428,33 @@ class AutomaticOrderTest(unittest.TestCase):
                 self.assertFalse(observer.disabled)
                 self.assertEqual(native.native_order, widget.ordered_ids())
                 self.assertEqual(widget.selected_ids(), ("F",))
-                self.assertEqual(native.focus_after_apply[0], "D")
-                self.assertEqual(native.focus_after_apply[-1], "F")
+                self.assertEqual(native.focus_after_apply, ["F"])
                 self.assertEqual(load_difficulties(path), {"E": "중"})
+
+                # Hold a real number picker across the next publication
+                # opportunity. The accepted position joins the existing batch.
+                native.hold.clear()
+                native.applying.clear()
+                native.ready_to_claim.clear()
+                native.claimed.clear()
+                widget.setCurrentRow(0)
+                widget.move_current(1)
+                wait_until(app, native.applying.is_set)
+                widget.setCurrentRow(5)
+                held = []
+                def accept_position():
+                    dialog = app.activeModalWidget()
+                    native.hold.set()
+                    reached = native.ready_to_claim.wait(1)
+                    held.append(reached and not native.claimed.wait(0.12))
+                    dialog.setIntValue(2)
+                    dialog.accept()
+                QTimer.singleShot(0, accept_position)
+                widget.request_position()
+                self.assertEqual(held, [True])
+                wait_until(app, lambda: not window._busy and not window._dirty_order())
+                self.assertEqual(native.native_order, tuple("FCBDEA"))
+                self.assertEqual(native.focus_after_apply, ["F", "C"])
             finally:
                 native.hold.set()
                 release_probe.set()

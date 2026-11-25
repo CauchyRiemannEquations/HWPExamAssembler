@@ -85,6 +85,15 @@ def _matches(document, path):
     return bool(name) and Path(name).is_absolute() and Path(name).resolve() == path
 
 
+def native_content_fingerprint(hwp):
+    # Whole native XML includes text, styles, equations, pictures and document
+    # settings. Binary HWP exports regenerate storage timestamps.
+    xml = hwp.automation.GetTextFile("HWPML2X", "")
+    if not isinstance(xml, str) or "<HWPML" not in xml or "</HWPML>" not in xml:
+        raise HwpAutomationError("한글의 현재 문서 내용을 비교할 수 없습니다.")
+    return _content_digest(xml)
+
+
 def _find(path):
     rot = pythoncom.GetRunningObjectTable()
     context = pythoncom.CreateBindCtx(0)
@@ -237,6 +246,10 @@ class UserDocument(HwpApplication):
             if win32gui.IsWindow(self.hwnd):
                 win32gui.EnableWindow(self.hwnd, True)
 
+    def input_available(self):
+        import win32gui
+        return bool(win32gui.IsWindowEnabled(self.hwnd))
+
     def show_target(self):
         import win32gui
         if self.state() == "closed":
@@ -270,12 +283,7 @@ class UserDocument(HwpApplication):
                 raise HwpAutomationError("한글 저장 형식을 확인할 수 없습니다.")
 
     def content_fingerprint(self):
-        # Whole native XML includes text, styles, equations, pictures and
-        # document settings. Binary HWP exports regenerate storage timestamps.
-        xml = self.automation.GetTextFile("HWPML2X", "")
-        if not isinstance(xml, str) or "<HWPML" not in xml or "</HWPML>" not in xml:
-            raise HwpAutomationError("한글의 현재 문서 내용을 비교할 수 없습니다.")
-        return _content_digest(xml)
+        return native_content_fingerprint(self)
 
     def reopen(self, old_path, new_path, *, unchanged_content=None):
         self.require_target(old_path)
