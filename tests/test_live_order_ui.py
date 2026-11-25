@@ -16,6 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from app.services import DocumentSnapshot, ExamDocumentService, QuestionSummary, file_fingerprint
+from app.services.difficulty import load_difficulties
 from app.ui import MainWindow
 from app.ui.question_list import QuestionListWidget
 from app.ui.question_row import LEVEL_ROLE, NUMBER_ROLE
@@ -259,6 +260,30 @@ def exercise_live_editor():
 
 
 class AutomaticOrderTest(unittest.TestCase):
+    def test_direct_open_starts_in_editor_and_first_selection_is_editable(self):
+        app = QApplication.instance() or QApplication([])
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "sample.hwpx"
+            path.write_bytes(b"assembled")
+            questions = tuple(QuestionSummary(qid, qid, True, {}) for qid in ("Q01", "Q02"))
+            snapshot = DocumentSnapshot(path, questions, file_fingerprint(path).sha256)
+            service = SyntheticService()
+            with (patch.object(service, "inspect", return_value=snapshot),
+                  patch("app.ui.main_window.recent_templates") as home_catalog):
+                window = MainWindow(service, initial_document=path)
+                window.show()
+                self.assertIs(window.pages.currentWidget(), window.editor_page)
+                wait_until(app, lambda: window._thread is None)
+                home_catalog.assert_not_called()
+                self.assertTrue(window.question_list.isEnabled())
+                self.assertEqual(window.question_list.selected_ids(), ("Q01",))
+                self.assertTrue(window.question_list.move_current(1))
+                window.question_list.difficulty_requested.emit(("Q01",), "상")
+                self.assertEqual(load_difficulties(path), {"Q01": "상"})
+                self.assertEqual(window.question_list.ordered_ids(), ("Q02", "Q01"))
+                window._restore_original_order()
+                window.close()
+
     def test_move_and_undo_while_hancom_is_saving(self):
         exercise_live_editor()
 

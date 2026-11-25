@@ -37,7 +37,6 @@ from app.ui.question_list import QuestionListWidget
 from app.ui.hwp_companion import CompanionWorker
 from app.ui.workers import DocumentWorker
 from app.ui.home import HomePage
-from app.ui.import_dialog import ImportDialog
 from app.ui.theme import EDITOR_STYLE
 
 
@@ -59,7 +58,7 @@ class MainWindow(QMainWindow):
     apply_requested = Signal(object, str, object, bool)
     save_current_requested = Signal(object, object, bool)
 
-    def __init__(self, service: ExamDocumentService, *, companion_factory=None) -> None:
+    def __init__(self, service: ExamDocumentService, *, companion_factory=None, initial_document: Path | None = None) -> None:
         super().__init__()
         self.service = service
         self.snapshot: DocumentSnapshot | None = None
@@ -80,6 +79,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_style()
         self._set_busy(False)
+        if initial_document is None:
+            self.show_home()
+        else:
+            self.load_document(str(initial_document))
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -229,7 +232,6 @@ class MainWindow(QMainWindow):
         frame.addWidget(bar)
         frame.addWidget(self.pages, 1)
         self.setCentralWidget(shell)
-        self.show_home()
 
     def _open_dropped_document(self, path: str) -> None:
         if not self._busy and not self._editing_in_hwp and self._allow_discard():
@@ -665,6 +667,8 @@ class MainWindow(QMainWindow):
     def open_import_dialog(self) -> None:
         if not self._allow_discard():
             return
+        from app.ui.import_dialog import ImportDialog
+
         dialog = ImportDialog(self.service.project_root, self)
         if not dialog.template_combo.count():
             path, _ = QFileDialog.getOpenFileName(self, "학교 시험지 양식 선택", "", "한글 문서 (*.hwp *.hwpx)")
@@ -685,12 +689,15 @@ class MainWindow(QMainWindow):
         self._auto_pending = False
         self._move_anchor = None
         self.show_editor()
+        if self.snapshot is None:
+            self.file_label.setText(Path(path).name)
         self.status_label.setText(f"{Path(path).name} · 문항을 불러오는 중…")
         self.log.appendPlainText(f"[OPEN] {path}")
         self._set_busy(True)
         worker = self._start_worker()
         self.inspect_requested.connect(worker.inspect)
         worker.inspected.connect(self._document_loaded)
+        self._thread.finished.connect(self.question_list.setFocus)
         self.inspect_requested.emit(path, self._visible_mode())
 
     def reload_document(self) -> None:

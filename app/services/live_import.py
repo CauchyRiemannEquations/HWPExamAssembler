@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -23,7 +23,8 @@ from app.hwp import (
 from app.hwp.fields import TERMINAL_FIELD, question_field
 from app.hwp.diagnostics import DiagnosticLog, comparison, fingerprint, safe_error
 from app.hwp.transaction import sha256
-from . import import_diagnostics, native_transfer, template_operations
+from . import import_diagnostics, native_transfer, question_index, template_operations
+from .exam_service import ExamDocumentService
 from .registered_template import RegisteredTemplate
 from .format_analysis import capture_format_report, compare_output
 from .native_transfer import NativeBlockIntegrityError
@@ -858,6 +859,8 @@ class LiveImportSession:
         self._progress("저장 파일을 같은 한글 세션에서 다시 열어 검증")
         self._stage("save_reopen")
         self.hwp.reset_documents()
+        metadata = {q.id: asdict(q) for q in self.registered}
+        captured = None
         try:
             self.hwp.open(verification_path)
             field_exists = getattr(self.hwp.automation, "FieldExist", None)
@@ -906,6 +909,10 @@ class LiveImportSession:
                         raise NativeBlockIntegrityError(
                             "저장 후 마지막 고정 블록의 텍스트를 찾지 못했습니다."
                         )
+            if disk_order == expected_order and disk_controls == controls:
+                captured = ExamDocumentService.capture_verified_list(
+                    disk_manager, disk_order, disk_controls, metadata, verified_path=verification_path,
+                )
         finally:
             self.close()
         if disk_order != expected_order:
@@ -938,7 +945,7 @@ class LiveImportSession:
                     json.dumps(self.format_check, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as error:
             self._progress(f"서식 기록을 저장하지 못했습니다: {error}")
-        import_diagnostics.write_import_audit(
+        output_hash = import_diagnostics.write_import_audit(
             self, used_builtin_template=used_builtin_template,
             final_check_added=final_block_added, disk_final_check_layout=disk_final_check_layout,
             insertion_position=insertion_position, structure_analyses=structure_analyses,
@@ -947,6 +954,8 @@ class LiveImportSession:
             numbering_style_source=numbering_style_source,
             final_block_expected_controls=final_block_expected_controls,
         )
+        if captured is not None and output_hash == captured.content_sha256:
+            question_index.store_questions(self.work_dir, replace(captured, path=output), metadata)
         if visible and open_after:
             os.startfile(output)
         return output

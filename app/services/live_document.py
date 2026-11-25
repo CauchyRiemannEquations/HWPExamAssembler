@@ -211,12 +211,13 @@ class LiveDocumentSession:
             profile = self.service._numbering_profile_for(source)
             numbered = frozenset(snapshot.numbered_ids)
             questions = []
+            metadata = self.service._import_metadata(source)
 
             def read_verified(manager, controls):
                 # Use the verification tab while it is open, so updating the
                 # list does not start another Hangul process on every drop.
                 questions.extend(self.service.read_open_questions(
-                    manager.hwp, manager, order, self.service._import_metadata(source), controls=controls
+                    manager.hwp, manager, order, metadata, controls=controls
                 ))
 
             def reorder(worker):
@@ -224,6 +225,7 @@ class LiveDocumentSession:
                     worker, staged, order, tuple(qid for qid in order if qid in numbered),
                     numbering_style=profile, backup_dir=directory / "backup", work_dir=directory,
                     allow_deletions=True, expected_sha256=before, on_verified=read_verified,
+                    expected_order=snapshot.order,
                 )
             audit = self._scratch_worker().run(reorder)
             final_hash = sha256(staged)
@@ -234,6 +236,7 @@ class LiveDocumentSession:
             # preserving its DocumentID and HWND across both native Open calls.
             self._publish(staged, backup, before, final_hash, order, snapshot, checkpoint)
             result = DocumentSnapshot(source, tuple(questions), content_sha256=final_hash)
+            self.service.remember_inspection(result, metadata)
             warnings = []
             if focus_qid in order:
                 try:

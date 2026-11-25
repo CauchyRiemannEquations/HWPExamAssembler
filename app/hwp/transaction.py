@@ -76,6 +76,7 @@ def apply_reorder_transaction(
     step_delay: float = 0.0,
     allow_deletions: bool = False,
     expected_sha256: str | None = None,
+    expected_order: tuple[str, ...] | None = None,
     on_verified: Callable[[QuestionFieldManager, dict[str, dict[str, int]]], None] | None = None,
 ) -> ReorderTransactionAudit:
     """Apply reorder and numbering atomically to an existing editable copy.
@@ -109,6 +110,8 @@ def apply_reorder_transaction(
         hwp.visual_step(step_delay)
         manager = QuestionFieldManager(hwp)
         initial_order = manager.ordered_question_ids()
+        if expected_order is not None and initial_order != expected_order:
+            raise HwpAutomationError("한글의 문항 목록이 앱에서 읽은 목록과 다릅니다. 문서를 다시 읽어 주세요.")
         if not requested_order:
             raise ValueError("시험지에는 문항이 한 개 이상 있어야 합니다.")
         if len(requested_order) != len(set(requested_order)):

@@ -118,13 +118,13 @@ def main() -> int:
             traceback.format_exc(), encoding="utf-8"
         )
     try:
-        window = MainWindow(ExamDocumentService(PROJECT_ROOT))
-        window.show()
+        initial_document = None
         if len(sys.argv) == 2:
             candidate = Path(sys.argv[1])
-            if candidate.is_file() and candidate.suffix.lower() in {".hwp", ".hwpx"}:
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(0, lambda: window.load_document(str(candidate.resolve())))
+            if candidate.suffix.lower() in {".hwp", ".hwpx"} and candidate.is_file():
+                initial_document = candidate
+        window = MainWindow(ExamDocumentService(PROJECT_ROOT), initial_document=initial_document)
+        window.show()
         return application.exec()
     except Exception:
         log_dir = PROJECT_ROOT / "logs"

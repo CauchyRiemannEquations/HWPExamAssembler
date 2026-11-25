@@ -7,13 +7,37 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from app.hwp.application import HwpApplication
+from app.hwp.application import HwpApplication, HwpAutomationError
 from app.hwp.fields import FIXED_FIELD_PREFIX, TERMINAL_FIELD, QuestionFieldManager, question_field
 from app.hwp.reorder import apply_permutation
+from app.hwp.transaction import apply_reorder_transaction
+from app.hwp.user_document import UserDocument
 from app.services.exam_service import ExamDocumentService, QuestionSummary
 
 
 class PublicEditorSpeedTests(unittest.TestCase):
+    def test_lost_com_collection_detaches_only_after_the_native_window_closes(self):
+        link = UserDocument(Path("exam.hwp"))
+        link.doc, link._documents, link.hwnd = object(), object(), 10
+        with patch("win32gui.IsWindow", return_value=True) as is_window:
+            self.assertEqual(link.state(), "inactive")
+            is_window.return_value = False
+            self.assertEqual(link.state(), "closed")
+
+    def test_incomplete_opening_list_cannot_delete_unseen_native_question(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "exam.hwp"
+            path.write_bytes(b"original")
+            native = Mock()
+            fields = [question_field(qid) for qid in ("Q001", "Q002", "Q003")]
+            native.automation.GetFieldList.return_value = "\x02".join([*fields, TERMINAL_FIELD])
+            with self.assertRaisesRegex(HwpAutomationError, "문항 목록"):
+                apply_reorder_transaction(native, path, ("Q003", "Q001"), (), numbering_style=None,
+                                          backup_dir=path.parent / "backup", work_dir=path.parent,
+                                          allow_deletions=True, expected_order=("Q001", "Q003"))
+            native.delete_selection.assert_not_called()
+            self.assertEqual(path.read_bytes(), b"original")
+
     def test_minimal_moves_preserve_slot_counts_across_headings(self):
         ids = ("Q001", "Q002", "G001", "Q004", "Q005")
         fixed = FIXED_FIELD_PREFIX + "1"

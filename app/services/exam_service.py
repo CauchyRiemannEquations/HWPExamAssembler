@@ -19,6 +19,7 @@ from app.hwp import (
 )
 from app.hwp.fields import question_field
 from app.hwp.transaction import sha256
+from . import question_index
 from .auto_qid import create_auto_qid_copy
 from .school_profile import load_school_profile
 
@@ -82,6 +83,11 @@ class ExamDocumentService:
             replace(question, controls=question.controls.copy()) for question in snapshot.questions
         ))
 
+    def remember_inspection(self, snapshot: DocumentSnapshot, metadata: dict) -> None:
+        if snapshot.content_sha256:
+            self._last_inspection = (self._copy_snapshot(snapshot), metadata)
+            question_index.store_questions(self.work_dir, snapshot, metadata)
+
     @staticmethod
     def _read_json_sidecar(document: Path, suffix: str) -> dict[str, object]:
         audit_path = document.with_suffix(document.suffix + suffix)
@@ -97,6 +103,8 @@ class ExamDocumentService:
     def _import_metadata(cls, document: Path) -> dict[str, dict[str, object]]:
         data = cls._read_json_sidecar(document, ".import.json")
         questions = data.get("questions", [])
+        if not isinstance(questions, list):
+            return {}
         return {
             str(item["id"]): item
             for item in questions
@@ -136,7 +144,8 @@ class ExamDocumentService:
             encoding="utf-8",
         )
 
-    def read_open_questions(self, hwp, manager, order, import_metadata, on_progress=None, *, controls=None):
+    @classmethod
+    def read_open_questions(cls, hwp, manager, order, import_metadata, on_progress=None, *, controls=None):
         """Read question summaries from an exact open document without opening or closing tabs."""
         questions = []
         if controls is None:
@@ -148,7 +157,7 @@ class ExamDocumentService:
         action, shape_set = hwp.automation.HAction, para.HSet
         for question_id in order:
             question_text = manager.question_text(question_id)
-            preview = self._preview(question_text)
+            preview = cls._preview(question_text)
             # Collapse the preceding preview selection before reading paragraph numbering.
             hwp.set_position(manager.position(question_field(question_id)))
             action.GetDefault("ParagraphShape", shape_set)
@@ -190,6 +199,54 @@ class ExamDocumentService:
                 on_progress(f"{question_id} 문항 정보 읽기")
         return questions
 
+    @classmethod
+    def capture_verified_list(cls, manager, order, controls, metadata, *, verified_path=None):
+        """Opportunistically index the already-reopened, verified native file."""
+        from .quick_questions import read_questions
+
+        try:
+            path = Path(manager.hwp.active_document().FullName)
+            if verified_path is not None and path.resolve() != verified_path.resolve():
+                return None
+            digest = sha256(path)
+            questions = read_questions(path, metadata)
+            if questions and tuple(q.id for q in questions) == order:
+                children = {}
+                for child in manager.child_question_fields():
+                    children.setdefault(child.group_id, []).append(child.question_id)
+                if all(q.controls == controls[q.id] and q.child_ids == tuple(children.get(q.id, ()))
+                       for q in questions):
+                    return DocumentSnapshot(path, tuple(questions), digest)
+            # Uncommon layouts can use the same tab before it closes.
+            native_questions = cls.read_open_questions(manager.hwp, manager, order, metadata, controls=controls)
+            return DocumentSnapshot(path, tuple(native_questions), digest)
+        except Exception:
+            # A preview error does not invalidate a verified native save.
+            # The editor can still use its normal inspection path.
+            return None
+
+    def _quick_inspection(self, source: Path, metadata: dict) -> DocumentSnapshot | None:
+        from .quick_questions import read_questions
+
+        digest = sha256(source)
+        cached = self._last_inspection
+        if (cached is not None and cached[0].path == source and cached[1] == metadata
+                and digest == cached[0].content_sha256):
+            return self._copy_snapshot(cached[0])
+        questions = question_index.load_questions(self.work_dir, digest, metadata)
+        if questions is not None:
+            snapshot = DocumentSnapshot(source, questions, digest)
+            self._last_inspection = (self._copy_snapshot(snapshot), metadata)
+            return snapshot
+        questions = read_questions(source, metadata)
+        if not questions:
+            return None
+        if sha256(source) != digest:
+            raise RuntimeError("읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 열어 주세요.")
+        snapshot = DocumentSnapshot(source, tuple(questions), digest)
+        self.remember_inspection(snapshot, metadata)
+        return snapshot
+
     def inspect(
         self,
         document: str | Path,
@@ -197,6 +254,7 @@ class ExamDocumentService:
         visible: bool = True,
         on_progress: Callable[[str], None] | None = None,
         auto_prepare: bool = True,
+        native_only: bool = False,
     ) -> DocumentSnapshot:
         source = Path(document).resolve()
         started_at = time.perf_counter()
@@ -206,10 +264,8 @@ class ExamDocumentService:
             raise ValueError("HWP 또는 HWPX 파일만 열 수 있습니다.")
 
         import_metadata = self._import_metadata(source)
-        cached = self._last_inspection
-        if (cached is not None and cached[0].path == source and cached[1] == import_metadata
-                and sha256(source) == cached[0].content_sha256):
-            snapshot = self._copy_snapshot(cached[0])
+        snapshot = None if native_only else self._quick_inspection(source, import_metadata)
+        if snapshot is not None:
             if on_progress is not None:
                 on_progress(f"문항 {len(snapshot.questions)}개 읽기 완료")
             return snapshot
@@ -252,17 +308,38 @@ class ExamDocumentService:
                 visible=visible,
                 on_progress=on_progress,
                 auto_prepare=False,
+                native_only=native_only,
             )
         if sha256(source) != source_hash:
             raise RuntimeError("읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 열어 주세요.")
         snapshot = DocumentSnapshot(path=source, questions=tuple(questions), content_sha256=source_hash)
-        self._last_inspection = (self._copy_snapshot(snapshot), import_metadata)
+        self.remember_inspection(snapshot, import_metadata)
         if on_progress is not None:
             on_progress(
                 f"문항 {len(questions)}개 읽기 완료 "
                 f"({time.perf_counter() - started_at:.1f}초)"
             )
         return snapshot
+
+    def _reorder_file(self, snapshot, output, requested_order, profile, visible, on_progress):
+        numbered = set(snapshot.numbered_ids)
+        metadata = self._import_metadata(output)
+        captured = None
+
+        def capture(manager, controls):
+            nonlocal captured
+            captured = self.capture_verified_list(manager, requested_order, controls, metadata)
+
+        with HwpApplication(visible=visible) as hwp:
+            audit = apply_reorder_transaction(
+                hwp, output, requested_order, tuple(qid for qid in requested_order if qid in numbered),
+                numbering_style=profile, backup_dir=output.parent / "backup", work_dir=self.work_dir,
+                on_progress=on_progress, allow_deletions=True, expected_order=snapshot.order,
+                expected_sha256=snapshot.content_sha256, on_verified=capture,
+            )
+        if captured is not None and captured.content_sha256 == audit.after_sha256:
+            self.remember_inspection(replace(captured, path=output), metadata)
+        return audit
 
     def apply_to_new_file(
         self,
@@ -286,30 +363,8 @@ class ExamDocumentService:
         output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot.path, output)
 
-        numbered = frozenset(snapshot.numbered_ids)
-        numbered_in_new_order = tuple(
-            question_id
-            for question_id in requested_order
-            if question_id in numbered
-        )
         profile = self._numbering_profile_for(snapshot.path)
-        try:
-            with HwpApplication(visible=visible) as hwp:
-                audit = apply_reorder_transaction(
-                    hwp,
-                    output,
-                    requested_order,
-                    numbered_in_new_order,
-                    numbering_style=profile,
-                    backup_dir=output.parent / "backup",
-                    work_dir=self.work_dir,
-                    on_progress=on_progress,
-                    allow_deletions=True,
-                )
-        except Exception:
-            # The copied output remains byte-equivalent to the selected input
-            # because the transaction publishes only after verification.
-            raise
+        audit = self._reorder_file(snapshot, output, requested_order, profile, visible, on_progress)
 
         audit_path = output.with_suffix(output.suffix + ".audit.json")
         audit_path.write_text(
@@ -344,26 +399,8 @@ class ExamDocumentService:
         if not os.access(output, os.W_OK):
             raise PermissionError(f"현재 편집본이 읽기 전용입니다: {output}")
 
-        numbered = frozenset(snapshot.numbered_ids)
-        numbered_in_new_order = tuple(
-            question_id
-            for question_id in requested_order
-            if question_id in numbered
-        )
         profile = self._numbering_profile_for(snapshot.path)
-        with HwpApplication(visible=visible) as hwp:
-            audit = apply_reorder_transaction(
-                hwp,
-                output,
-                requested_order,
-                numbered_in_new_order,
-                numbering_style=profile,
-                backup_dir=output.parent / "backup",
-                work_dir=self.work_dir,
-                on_progress=on_progress,
-                allow_deletions=True,
-                expected_sha256=snapshot.content_sha256,
-            )
+        audit = self._reorder_file(snapshot, output, requested_order, profile, visible, on_progress)
 
         audit_path = output.with_suffix(output.suffix + ".audit.json")
         audit_path.write_text(
@@ -391,6 +428,7 @@ class ExamDocumentService:
             visible=visible,
             on_progress=on_progress,
             auto_prepare=False,
+            native_only=True,
         )
         expected_snapshot = (
             expected_ids if isinstance(expected_ids, DocumentSnapshot) else None

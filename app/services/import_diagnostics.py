@@ -73,7 +73,7 @@ def write_import_audit(
     session: LiveImportSession, *, used_builtin_template, final_check_added,
     disk_final_check_layout, insertion_position, structure_analyses, disk_order, controls,
     numbering_style, numbering_style_source, final_block_expected_controls,
-) -> None:
+) -> str:
     audit = {
         "method": "automatic block detection -> verified native Copy/Paste",
         "template": str(session.template_path),
@@ -101,3 +101,4 @@ def write_import_audit(
     audit_path.write_text(
         json.dumps(audit, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    return audit["output_sha256"]

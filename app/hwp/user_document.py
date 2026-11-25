@@ -99,7 +99,7 @@ def _find(path):
                 doc = docs.Item(i)
                 if _matches(doc, path):
                     matches.append((obj, doc))
-        except (pythoncom.com_error, OSError):
+        except (pythoncom.com_error, OSError, AttributeError):
             continue
     if len(matches) > 1:
         raise HwpAutomationError("같은 편집본이 여러 한글 문서에 열려 있습니다. 하나의 편집 창만 남겨 주세요.")
@@ -193,6 +193,11 @@ class UserDocument(HwpApplication):
             if error.hresult in (-2147417848, -2147023174, -2147220995):
                 return "closed"
             return "inactive"
+        except AttributeError:
+            # A quitting automation server can drop XHwpDocuments.Count
+            # before pywin32 sees RPC_E_DISCONNECTED.
+            import win32gui
+            return "inactive" if self.hwnd and win32gui.IsWindow(self.hwnd) else "closed"
 
     def require_target(self, path=None):
         import win32gui
