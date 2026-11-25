@@ -30,8 +30,8 @@ class PublicEditorSpeedTests(unittest.TestCase):
                 self.assertEqual(manager._destination_after_cut(marker, starts_paragraph), (0, 10, 25))
             self.assertEqual(scan.call_count, 3)
 
-    def test_shell_reopen_uses_the_bound_active_tab_once_even_if_com_loses_the_result(self):
-        old, new = Path("original.hwpx").resolve(), Path("verified.hwpx").resolve()
+    @staticmethod
+    def _shell_link(old):
         link = UserDocument(old)
         link.doc = SimpleNamespace(FullName=str(old), DocumentID=15, Modified=0)
         link.doc_id, link.hwnd = 15, 30
@@ -39,6 +39,11 @@ class PublicEditorSpeedTests(unittest.TestCase):
         link._windows = SimpleNamespace(Active_XHwpWindow=SimpleNamespace(WindowHandle=30))
         link._hwp = Mock()
         link._hwp.Path = str(old)
+        return link
+
+    def test_shell_reopen_uses_the_bound_active_tab_once_even_if_com_loses_the_result(self):
+        old, new = Path("original.hwpx").resolve(), Path("verified.hwpx").resolve()
+        link = self._shell_link(old)
 
         def open_then_fault(path, fmt, options):
             link.doc.FullName = path
@@ -60,6 +65,39 @@ class PublicEditorSpeedTests(unittest.TestCase):
             # Older object interfaces can omit Path; tab identity still applies.
             del link._hwp.Path
             link._require_file_action_target(new)
+
+    def test_retry_only_when_guarded_shell_tab_still_has_the_whole_checkpoint(self):
+        old, new = Path("old.hwpx").resolve(), Path("new.hwpx").resolve()
+        for scenario, calls in (("unchanged", 2), ("edited", 1), ("switched", 1),
+                                ("external-dialog", 1), ("finished-while-pumping", 1),
+                                ("second-fault", 2), ("unrelated-error", 1)):
+            with self.subTest(scenario=scenario):
+                link = self._shell_link(old)
+                link._input_guarded = scenario != "external-dialog"
+                link.content_fingerprint = Mock(return_value=b"edited" if scenario == "edited" else b"original")
+
+                def finish():
+                    link.doc.FullName = link._hwp.Path = str(new)
+
+                def attempt(*args):
+                    if link._hwp.Open.call_count == 1 or scenario == "second-fault":
+                        if scenario == "switched":
+                            link._documents.Active_XHwpDocument = SimpleNamespace(FullName=str(old), DocumentID=61)
+                        code = -2147417846 if scenario == "unrelated-error" else -2147417851
+                        raise pythoncom.com_error(code, "native fault", None, None)
+                    finish()
+                    return True
+
+                link._hwp.Open.side_effect = attempt
+                with (patch("win32gui.IsWindow", return_value=True), patch("win32gui.IsWindowEnabled", return_value=False),
+                      patch("pythoncom.PumpWaitingMessages", side_effect=finish if scenario == "finished-while-pumping" else None),
+                      patch("app.hwp.user_document.time.sleep")):
+                    if scenario in ("unchanged", "finished-while-pumping"):
+                        link.reopen(old, new, unchanged_content=b"original")
+                    else:
+                        with self.assertRaises((pythoncom.com_error, HwpAutomationError)):
+                            link.reopen(old, new, unchanged_content=b"original")
+                self.assertEqual(link._hwp.Open.call_count, calls)
 
     def test_lost_com_collection_detaches_only_after_the_native_window_closes(self):
         link = UserDocument(Path("exam.hwp"))

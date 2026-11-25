@@ -132,6 +132,7 @@ class UserDocument(HwpApplication):
         self.doc = None
         self.doc_id = None
         self.hwnd = None
+        self._input_guarded = False
         self._documents = None
         self._windows = None
 
@@ -217,16 +218,18 @@ class UserDocument(HwpApplication):
                 or hwnd != self.hwnd or not win32gui.IsWindow(hwnd)):
             raise HwpAutomationError("연결된 한글 편집본이 현재 탭이 아닙니다. 해당 문서로 돌아와 다시 시도하세요.")
 
-    def _require_file_action_target(self, path):
+    def _require_file_action_target(self, path, *, require_object_path=False):
         self.require_target(path)
         # On versions exposing the application-level Path, confirm its global
         # file actions address the same document as the active tab collection.
         try:
             active_path = self.automation.Path
         except AttributeError:
-            return
+            if not require_object_path:
+                return
+            raise HwpAutomationError("한글의 활성 파일 경로를 확인할 수 없습니다.")
         except pythoncom.com_error as error:
-            if error.hresult in (-2147352573, -2147352570):  # member/name not found
+            if not require_object_path and error.hresult in (-2147352573, -2147352570):  # member/name not found
                 return
             raise
         if not active_path or not Path(active_path).is_absolute() or Path(active_path).resolve() != path:
@@ -240,9 +243,11 @@ class UserDocument(HwpApplication):
             raise HwpAutomationError("한글 대화상자를 먼저 닫아 주세요.")
         win32gui.EnableWindow(self.hwnd, False)
         try:
+            self._input_guarded = True
             self.require_target()
             yield
         finally:
+            self._input_guarded = False
             if win32gui.IsWindow(self.hwnd):
                 win32gui.EnableWindow(self.hwnd, True)
 
@@ -285,6 +290,36 @@ class UserDocument(HwpApplication):
     def content_fingerprint(self):
         return native_content_fingerprint(self)
 
+    def _open_bound_file(self, old_path, new_path, fmt, checkpoint):
+        for attempt in range(2):
+            self._require_file_action_target(old_path, require_object_path=bool(attempt))
+            try:
+                opened = self.automation.Open(str(new_path), fmt, "skipcomment:true")
+            except pythoncom.com_error as error:
+                if _matches(self.doc, new_path):
+                    return  # The native handoff completed before COM reported the error.
+                if (attempt or error.hresult != -2147417851 or checkpoint is None
+                        or not self._input_guarded or self.input_available()):
+                    raise
+                # A shell-owned HWP frame can briefly fault before touching the
+                # file. Allow pending messages to settle, then inspect the exact
+                # tab and its complete native contents before a single retry.
+                pythoncom.PumpWaitingMessages()
+                time.sleep(0.03)
+                pythoncom.PumpWaitingMessages()
+                if _matches(self.doc, new_path):
+                    return
+                self._require_file_action_target(old_path, require_object_path=True)
+                if (not self._input_guarded or self.input_available() or not _matches(self.doc, old_path)
+                        or self.content_fingerprint() != checkpoint):
+                    raise
+                if self.doc.Modified:
+                    self.doc.Modified = 0
+            else:
+                if not opened and not _matches(self.doc, new_path):
+                    raise HwpAutomationError(f"같은 한글 창에 문서를 불러올 수 없습니다: {new_path}")
+                return
+
     def reopen(self, old_path, new_path, *, unchanged_content=None):
         self.require_target(old_path)
         old_dirty = self.doc.Modified
@@ -301,17 +336,10 @@ class UserDocument(HwpApplication):
             fmt = {".hwp": "HWP", ".hwpx": "HWPX"}[new_path.suffix.lower()]
             previous_mode = self.automation.SetMessageBoxMode(0x00001000)
             try:
-                self._require_file_action_target(old_path)
-                opened = self.automation.Open(str(new_path), fmt, "skipcomment:true")
-            except pythoncom.com_error:
-                if not _matches(self.doc, new_path):
-                    raise
-                opened = True  # The native operation completed before COM reported the error.
+                self._open_bound_file(old_path, new_path, fmt, unchanged_content)
             finally:
                 self.automation.SetMessageBoxMode(previous_mode)
-            if not opened and not _matches(self.doc, new_path):
-                raise HwpAutomationError(f"같은 한글 창에 문서를 불러올 수 없습니다: {new_path}")
-            self.require_target(new_path)
+            self._require_file_action_target(new_path)
         except Exception:
             if old_dirty and _matches(self.doc, old_path):
                 self.doc.Modified = old_dirty
