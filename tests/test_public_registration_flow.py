@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 from app.hwp.native_template import Paragraph
 from app.services import ExamDocumentService
 from app.services.template_catalog import recent_templates
+from app.services.template_model import file_digest
 from app.ui.import_dialog import ImportDialog
 from app.ui.main_window import MainWindow
 
@@ -31,6 +32,7 @@ class WorkingCopy:
     def open(self, source):
         path = self.folder / source.name
         path.write_bytes(source.read_bytes())
+        self.source_sha256 = file_digest(path)
         return path
 
     def scan(self):

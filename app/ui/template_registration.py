@@ -52,8 +52,8 @@ class StudioWorker(QObject):
         native = NativeTemplate(scratch.name)
         try:
             self.status.emit('한글에서 양식의 작업 사본을 여는 중…')
-            copy = native.open(source)
-            signature = file_digest(copy)
+            native.open(source)
+            signature = native.source_sha256
             self.status.emit('문항 번호와 고정 안내를 읽는 중…')
             paragraphs = native.scan()
             candidates = suggest(paragraphs)

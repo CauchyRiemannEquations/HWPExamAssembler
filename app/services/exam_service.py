@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections.abc import Callable
 import json
 import os
@@ -66,6 +66,7 @@ class ExamDocumentService:
         self.school_profile = load_school_profile(
             self.project_root / "project" / "school_profile.json"
         )
+        self._last_inspection: tuple[DocumentSnapshot, dict[str, dict[str, object]]] | None = None
 
     @staticmethod
     def _preview(text: str, *, limit: int = 90) -> str:
@@ -75,10 +76,11 @@ class ExamDocumentService:
         return compact if len(compact) <= limit else compact[: limit - 1] + "…"
 
     @staticmethod
-    def _is_numbered_paragraph(hwp: HwpApplication) -> bool:
-        parameter = hwp.automation.HParameterSet.HParaShape
-        hwp.automation.HAction.GetDefault("ParagraphShape", parameter.HSet)
-        return int(parameter.HeadingType) == 2
+    def _copy_snapshot(snapshot: DocumentSnapshot) -> DocumentSnapshot:
+        # Each caller owns the mutable control-count dictionaries in its summaries.
+        return replace(snapshot, questions=tuple(
+            replace(question, controls=question.controls.copy()) for question in snapshot.questions
+        ))
 
     @staticmethod
     def _read_json_sidecar(document: Path, suffix: str) -> dict[str, object]:
@@ -134,15 +136,23 @@ class ExamDocumentService:
             encoding="utf-8",
         )
 
-    def read_open_questions(self, hwp, manager, order, import_metadata, on_progress=None):
+    def read_open_questions(self, hwp, manager, order, import_metadata, on_progress=None, *, controls=None):
         """Read question summaries from an exact open document without opening or closing tabs."""
         questions = []
-        controls = manager.question_control_summaries()
+        if controls is None:
+            controls = manager.question_control_summaries()
+        children_by_group = {}
+        for child in manager.child_question_fields():
+            children_by_group.setdefault(child.group_id, []).append(child)
+        para = hwp.automation.HParameterSet.HParaShape
+        action, shape_set = hwp.automation.HAction, para.HSet
         for question_id in order:
             question_text = manager.question_text(question_id)
             preview = self._preview(question_text)
+            # Collapse the preceding preview selection before reading paragraph numbering.
             hwp.set_position(manager.position(question_field(question_id)))
-            children = manager.child_question_fields(question_id)
+            action.GetDefault("ParagraphShape", shape_set)
+            children = children_by_group.get(question_id, ())
             question_controls = controls.get(question_id, {})
             metadata = import_metadata.get(question_id, {})
             was_manual = bool(metadata.get("manual_required", False))
@@ -158,7 +168,7 @@ class ExamDocumentService:
                 QuestionSummary(
                     id=question_id,
                     preview=preview,
-                    numbered=self._is_numbered_paragraph(hwp),
+                    numbered=int(para.HeadingType) == 2,
                     controls=question_controls,
                     kind="group" if children else "question",
                     child_ids=tuple(item.question_id for item in children),
@@ -195,6 +205,15 @@ class ExamDocumentService:
         if source.suffix.lower() not in {".hwp", ".hwpx"}:
             raise ValueError("HWP 또는 HWPX 파일만 열 수 있습니다.")
 
+        import_metadata = self._import_metadata(source)
+        cached = self._last_inspection
+        if (cached is not None and cached[0].path == source and cached[1] == import_metadata
+                and sha256(source) == cached[0].content_sha256):
+            snapshot = self._copy_snapshot(cached[0])
+            if on_progress is not None:
+                on_progress(f"문항 {len(snapshot.questions)}개 읽기 완료")
+            return snapshot
+
         runtime_dir = self.work_dir / f"gui-inspect-{uuid.uuid4().hex}"
         runtime_dir.mkdir(parents=True)
         runtime = runtime_dir / source.name
@@ -205,10 +224,8 @@ class ExamDocumentService:
             on_progress(f"{source.name} 열기")
         needs_auto_prepare = False
         questions: list[QuestionSummary] = []
-        import_metadata = self._import_metadata(source)
         with HwpApplication(visible=visible) as hwp:
             hwp.open(runtime)
-            hwp.visual_step(0.06)
             manager = QuestionFieldManager(hwp)
             order = manager.ordered_question_ids()
             if not order:
@@ -239,6 +256,7 @@ class ExamDocumentService:
         if sha256(source) != source_hash:
             raise RuntimeError("읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 열어 주세요.")
         snapshot = DocumentSnapshot(path=source, questions=tuple(questions), content_sha256=source_hash)
+        self._last_inspection = (self._copy_snapshot(snapshot), import_metadata)
         if on_progress is not None:
             on_progress(
                 f"문항 {len(questions)}개 읽기 완료 "
@@ -286,7 +304,6 @@ class ExamDocumentService:
                     backup_dir=output.parent / "backup",
                     work_dir=self.work_dir,
                     on_progress=on_progress,
-                    step_delay=0.06 if visible else 0.0,
                     allow_deletions=True,
                 )
         except Exception:
@@ -344,7 +361,6 @@ class ExamDocumentService:
                 backup_dir=output.parent / "backup",
                 work_dir=self.work_dir,
                 on_progress=on_progress,
-                step_delay=0.06 if visible else 0.0,
                 allow_deletions=True,
                 expected_sha256=snapshot.content_sha256,
             )

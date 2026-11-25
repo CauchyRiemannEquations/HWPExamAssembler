@@ -68,7 +68,7 @@ class RegisteredTemplate:
         self.slots = {}
         self.fixed = {}
 
-    def prepare(self, session):
+    def prepare(self, session, template_xml=None):
         hwp = session.hwp
         fields = QuestionFieldManager(hwp)
         # A prior year's assembled exam is a valid template. Retire this
@@ -78,6 +78,7 @@ class RegisteredTemplate:
             if old.startswith((FIELD_PREFIX, CHILD_FIELD_PREFIX, FIXED_FIELD_PREFIX, "__HWPT__")):
                 fresh = "__HWPOld__" + uuid4().hex
                 hwp.automation.RenameField(old, fresh)
+                template_xml = None
                 if hwp.automation.FieldExist(old) or not hwp.automation.FieldExist(fresh):
                     raise ValueError("작업 사본의 이전 수합 식별자를 분리할 수 없습니다.")
         hwp.move_to_end()
@@ -87,8 +88,9 @@ class RegisteredTemplate:
             hwp.set_position(p)
             if p > end or hwp.current_position() != p:
                 raise ValueError("등록한 본문 좌표와 실제 한글 양식이 일치하지 않습니다.")
-        xml = ElementTree.fromstring(hwp.automation.GetTextFile("HWPML2X", ""))
-        original = xml.findall("./BODY/SECTION/P")
+        if template_xml is None:
+            template_xml = hwp.automation.GetTextFile("HWPML2X", "")
+        original = self._native_paragraphs(template_xml)
         if end[0] != 0 or len(original) != end[1] + 1:
             raise ValueError("양식의 한글 본문 문단 수를 확인할 수 없습니다.")
         replacements = sorted((a.start, a.end) for a in self.areas if a.role == "replace")
@@ -153,7 +155,7 @@ class RegisteredTemplate:
             buckets[slot].append(q)
         hwp.move_to_end()
         total = hwp.current_position()[1] + 1
-        native_paragraphs = self._native_paragraphs(hwp)
+        native_paragraphs = self._native_paragraphs(hwp.automation.GetTextFile("HWPML2X", ""))
         if len(native_paragraphs) != total:
             raise RuntimeError("수합본의 본문 문단과 한글 위치를 대조할 수 없습니다.")
         raw = self.directory / "with-questions.hwpx"
@@ -185,8 +187,8 @@ class RegisteredTemplate:
         return result
 
     @staticmethod
-    def _native_paragraphs(hwp):
-        return ElementTree.fromstring(hwp.automation.GetTextFile("HWPML2X", "")).findall("./BODY/SECTION/P")
+    def _native_paragraphs(xml):
+        return ElementTree.fromstring(xml).findall("./BODY/SECTION/P")
 
     @staticmethod
     def _signature(paragraph):
@@ -198,8 +200,10 @@ class RegisteredTemplate:
         ))
         return " ".join(content.split()), objects
 
-    def verify_preserved(self, hwp):
-        paragraphs = self._native_paragraphs(hwp)
+    def verify_preserved(self, hwp, *, xml=None):
+        if xml is None:
+            xml = hwp.automation.GetTextFile("HWPML2X", "")
+        paragraphs = self._native_paragraphs(xml)
         for index, expected in self.protected.items():
             if index >= len(paragraphs) or self._signature(paragraphs[index]) != expected:
                 raise RuntimeError(f"저장된 수합본의 고정 영역이 원래 양식과 다릅니다 ({index + 1}번째 문단).")

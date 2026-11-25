@@ -19,7 +19,7 @@ from .application import HwpApplication, HwpAutomationError
 
 def _content_digest(xml):
     raw = xml.encode("utf-8")
-    if b"<BINDATA " not in raw:
+    if not any(tag in raw for tag in (b"<BINDATA ", b"<CARETPOS ", b"<AUTONUM ")):
         return hashlib.sha256(raw).digest()
 
     # Hancom sometimes reports a different Size for the exact same compressed
@@ -32,9 +32,28 @@ def _content_digest(xml):
     digest = hashlib.sha256()
     view = memoryview(raw)
 
+    def hash_number_attrs(offset, names, replacement):
+        nonlocal hashed_until
+        tag_end = raw.index(b">", offset)
+        # Consume quoted values whole, so text inside another attribute cannot
+        # be mistaken for a native attribute name.
+        for match in re.finditer(rb"""\s([^\s=/>]+)=(["'])(.*?)\2""", raw[offset:tag_end], re.DOTALL):
+            if match[1] in names and match[3].isdigit():
+                digest.update(view[hashed_until:offset + match.start(3)])
+                digest.update(replacement)
+                hashed_until = offset + match.end(3)
+
     def open_element(name, attrs):
         nonlocal start
         path.append(name)
+        if path == ["HWPML", "HEAD", "DOCSETTING", "CARETPOS"]:
+            # Scrolling or following a question changes the saved view.
+            hash_number_attrs(parser.CurrentByteIndex, (b"List", b"Para", b"Pos"), b"0")
+        elif (path[:2] == ["HWPML", "BODY"] and path[-2:] == ["TEXT", "AUTONUM"]
+              and ("FOOTER" in path or "HEADER" in path) and attrs.get("NumberType") == "TotalPage"):
+            # Pagination updates this computed field's display after a save.
+            # Its type, format, position, and all page breaks remain significant.
+            hash_number_attrs(parser.CurrentByteIndex, (b"Number",), b"0")
         if (path == ["HWPML", "TAIL", "BINDATASTORAGE", "BINDATA"]
                 and attrs.get("Compress") == "true" and attrs.get("Encoding") == "Base64"):
             start = parser.CurrentByteIndex
@@ -43,17 +62,14 @@ def _content_digest(xml):
         nonlocal start, hashed_until
         if name == "BINDATA" and len(path) == 4 and start is not None:
             tag_end = raw.index(b">", start) + 1
-            size = re.search(rb"""\sSize=(["'])([0-9]+)\1""", raw[start:tag_end])
-            if size is not None:
+            if b" Size=" in raw[start:tag_end]:
                 data = b"".join(raw[tag_end:parser.CurrentByteIndex].split())
                 try:
                     length = len(base64.b64decode(data, validate=True))
                 except (ValueError, binascii.Error):
                     length = 0
                 if length:
-                    digest.update(view[hashed_until:start + size.start(2)])
-                    digest.update(str(length).encode("ascii"))
-                    hashed_until = start + size.end(2)
+                    hash_number_attrs(start, (b"Size",), str(length).encode("ascii"))
             start = None
         path.pop()
 
@@ -107,13 +123,18 @@ class UserDocument(HwpApplication):
         self.doc = None
         self.doc_id = None
         self.hwnd = None
+        self._documents = None
+        self._windows = None
 
-    def connect(self, is_locked, timeout=16.0):
+    def connect(self, is_locked, timeout=16.0, *, only_if_open=False):
         import win32gui
         pythoncom.CoInitialize()
         self._com_initialized = True
         try:
             found = _find(self.path)
+            if not found and only_if_open:
+                self.close()
+                return False
             if not found:
                 # A shell-owned document survives releasing our last automation reference.
                 if not is_locked(self.path):
@@ -126,34 +147,46 @@ class UserDocument(HwpApplication):
             if not found:
                 raise HwpAutomationError("열린 한글 문서의 경로를 확인할 수 없습니다. 해당 편집본을 한글에서 확인하세요.")
             self._hwp, self.doc = found
+            # These collections belong to the application. The active item
+            # is deliberately looked up again on every identity check.
+            self._documents = self.automation.XHwpDocuments
+            self._windows = self.automation.XHwpWindows
             self.doc_id = int(self.doc.DocumentID)
             if self.security_module:
                 self.security_module_registered = bool(self.automation.RegisterModule(
                     "FilePathCheckDLL", self.security_module
                 ))
             self.activate_document(self.doc)
-            self.hwnd = int(self.automation.XHwpWindows.Active_XHwpWindow.WindowHandle)
+            self.hwnd = int(self._windows.Active_XHwpWindow.WindowHandle)
             self.require_target()
             if not win32gui.IsWindowVisible(self.hwnd):
                 raise HwpAutomationError("한글 창이 표시되지 않아 편집본에 연결할 수 없습니다.")
+            return True
         except BaseException:
             self.close()
             raise
+
+    def active_document(self):
+        return self._documents.Active_XHwpDocument
 
     def state(self):
         if self.doc is None:
             return "closed"
         try:
-            docs = self.automation.XHwpDocuments
-            exact = any(int(doc.DocumentID) == self.doc_id and _matches(doc, self.path)
-                        for doc in (docs.Item(i) for i in range(docs.Count)))
-            if not exact:
+            count = self._documents.Count
+            if not count:
                 return "closed"
             active = self.active_document()
-            hwnd = int(self.automation.XHwpWindows.Active_XHwpWindow.WindowHandle)
-            if int(active.DocumentID) == self.doc_id and _matches(active, self.path) and hwnd == self.hwnd:
-                return "active"
-            return "inactive"
+            if int(active.DocumentID) == self.doc_id:
+                if not _matches(active, self.path):
+                    return "closed"
+                hwnd = int(self._windows.Active_XHwpWindow.WindowHandle)
+                return "active" if hwnd == self.hwnd else "inactive"
+            for i in range(count):
+                doc = self._documents.Item(i)
+                if int(doc.DocumentID) == self.doc_id and _matches(doc, self.path):
+                    return "inactive"
+            return "closed"
         except pythoncom.com_error as error:
             # Only disconnection is evidence that the linked document is gone.
             # RPC_E_CALL_REJECTED during a Hangul dialog is temporary.
@@ -165,7 +198,7 @@ class UserDocument(HwpApplication):
         import win32gui
         path = self.path if path is None else path
         active = self.active_document()
-        hwnd = int(self.automation.XHwpWindows.Active_XHwpWindow.WindowHandle)
+        hwnd = int(self._windows.Active_XHwpWindow.WindowHandle)
         if (int(active.DocumentID) != self.doc_id or not _matches(active, path)
                 or hwnd != self.hwnd or not win32gui.IsWindow(hwnd)):
             raise HwpAutomationError("연결된 한글 편집본이 현재 탭이 아닙니다. 해당 문서로 돌아와 다시 시도하세요.")
@@ -209,7 +242,7 @@ class UserDocument(HwpApplication):
             self.automation.SetMessageBoxMode(previous_mode)
         self.require_target()
         if not saved or self.doc.Modified:
-            raise HwpAutomationError("한글의 현재 수정 내용을 저장하지 못했습니다. 순서는 그대로입니다.")
+            raise HwpAutomationError("한글의 현재 수정 내용을 저장하지 못했습니다.")
         with self.path.open("rb") as source:
             magic = bytes.fromhex("d0cf11e0a1b11ae1") if fmt == "HWP" else b"PK"
             if source.read(len(magic)) != magic:
@@ -242,6 +275,7 @@ class UserDocument(HwpApplication):
             raise
 
     def close(self):
+        self._documents = self._windows = None
         self.doc = self._hwp = None
         if self._com_initialized:
             pythoncom.CoUninitialize()

@@ -349,9 +349,11 @@ def analyze_hwpml(xml: str, extra_instructions: str = "") -> FormatReport:
     return report
 
 
-def capture_format_report(hwp, extra_instructions: str = "") -> FormatReport:
+def capture_format_report(hwp, extra_instructions: str = "", *, xml: str | None = None) -> FormatReport:
     try:
-        return analyze_hwpml(hwp.automation.GetTextFile('HWPML2X', ''), extra_instructions)
+        if xml is None:
+            xml = hwp.automation.GetTextFile('HWPML2X', '')
+        return analyze_hwpml(xml, extra_instructions)
     except Exception as error:
         declared, unresolved = parse_instructions(extra_instructions.splitlines())
         return FormatReport(declared=declared, unresolved=unresolved,

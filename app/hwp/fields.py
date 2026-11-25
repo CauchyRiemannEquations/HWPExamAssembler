@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Callable
 import re
 import time
+import pythoncom
 
 from app.hwp.application import HwpApplication, HwpAutomationError
+from app.hwp.control_layout import ControlLayout
 from project import ImportManifest
 
 
@@ -21,6 +24,10 @@ GROUP_OBJECTIVE_LABEL = re.compile(
     r"(?P<objective>\d{1,3}(?:\s*[-~～]\s*\d{1,3})?)"
     r"(?P<suffix>\s*,\s*(?:서답형|서술형)\s*\d{1,3})?\s*\]"
 )
+
+
+class MissingPastedQuestion(HwpAutomationError):
+    """The ordered fields still describe the cut document after native Paste."""
 
 
 def group_objective_label_replacement(
@@ -101,12 +108,16 @@ class QuestionFieldManager:
         self._field_names_cache: tuple[str, ...] | None = None
         self._anchor_cache: dict[str, tuple[int, int, int]] | None = None
         self._boundary_cache: dict[str, tuple[int, int, int]] | None = None
+        self._control_layout: ControlLayout | None = None
+        self._next_boundaries: dict[str, str] | None = None
 
     def invalidate_cache(self) -> None:
         """Forget document-order data after a structural edit."""
         self._field_names_cache = None
         self._anchor_cache = None
         self._boundary_cache = None
+        self._control_layout = None
+        self._next_boundaries = None
 
     def field_names(self, *, selection_only: bool = False) -> tuple[str, ...]:
         if not selection_only and self._field_names_cache is not None:
@@ -127,6 +138,18 @@ class QuestionFieldManager:
             if question_id is not None:
                 result.append(question_id)
         return tuple(result)
+
+    def block_layout(self) -> tuple[str, ...]:
+        """Question IDs and immovable section ends in native field order."""
+        layout = []
+        for name in self.field_names():
+            if name.startswith(FIXED_FIELD_PREFIX):
+                layout.append(name)
+            else:
+                question_id = parse_question_field(name)
+                if question_id is not None:
+                    layout.append(question_id)
+        return tuple(layout)
 
     def child_question_fields(
         self,
@@ -186,6 +209,12 @@ class QuestionFieldManager:
         return self.hwp.current_position()
 
     def anchor_position(self, name: str) -> tuple[int, int, int]:
+        try:
+            return self._top_level_anchors()[name]
+        except KeyError as error:
+            raise HwpAutomationError(f"Unknown body field: {name}") from error
+
+    def _top_level_anchors(self) -> dict[str, tuple[int, int, int]]:
         """Return the field control's anchor, not an inferred text marker.
 
         An empty click-here field occupies eight logical character positions in
@@ -197,31 +226,42 @@ class QuestionFieldManager:
         """
         if self._anchor_cache is None:
             names = self.field_names()
-            anchors: list[tuple[int, int, int]] = []
-            control = self.hwp.automation.HeadCtrl
-            while control is not None:
-                if str(getattr(control, "CtrlID", "")) == "%clk":
-                    value = control.GetAnchorPos(0)
-                    anchor = (
-                        int(value.Item("List")),
-                        int(value.Item("Para")),
-                        int(value.Item("Pos")),
-                    )
-                    if anchor[0] == 0:
-                        anchors.append(anchor)
-                control = getattr(control, "Next", None)
-
-            anchors.sort()
+            if self._control_layout is None:
+                self._control_layout = ControlLayout.read(self.hwp, inventory=False)
+            anchors = sorted(self._control_layout.field_anchors)
+            if len(names) > len(anchors):
+                # GetFieldList includes named fields inside tables and running
+                # headers. They have another list ID and cannot bound a body block.
+                caret = self.hwp.current_position()
+                try:
+                    # Ask the field at each real body anchor for its name. This
+                    # avoids looking up and scrolling to every header/table
+                    # field too. Keep the original lookup for unusual fields
+                    # where the caret cannot enter the click-here control.
+                    body_names = []
+                    try:
+                        for lst, para, offset in anchors:
+                            if not self.hwp.automation.SetPos(lst, para, offset + 8):
+                                break
+                            body_names.append(self.hwp.automation.GetCurFieldName(0))
+                    except Exception:
+                        body_names.clear()
+                    in_body = set(body_names)
+                    ordered_names = tuple(name for name in names if name in in_body)
+                    if (len(in_body) == len(anchors) and "" not in in_body
+                            and tuple(body_names) == ordered_names):
+                        names = ordered_names
+                    else:
+                        names = tuple(name for name in names if self.position(name)[0] == 0)
+                finally:
+                    self.hwp.set_position(caret)
             if len(anchors) != len(names):
                 raise HwpAutomationError(
                     "Cannot map named click-here fields to top-level controls: "
                     f"names={len(names)}, controls={len(anchors)}"
                 )
             self._anchor_cache = dict(zip(names, anchors, strict=True))
-        try:
-            return self._anchor_cache[name]
-        except KeyError as error:
-            raise HwpAutomationError(f"Unknown field: {name}") from error
+        return self._anchor_cache
 
     def block_boundary_position(self, name: str) -> tuple[int, int, int]:
         """Expand a question boundary over native objects before its ID field.
@@ -234,35 +274,20 @@ class QuestionFieldManager:
         because that paragraph can share template header controls.
         """
         if self._boundary_cache is None:
-            names = self.field_names()
-            anchors = {field_name: self.anchor_position(field_name) for field_name in names}
+            anchors = self._top_level_anchors()
             order = self.ordered_question_ids()
             first_question = order[0] if order else None
-            movable_by_paragraph: dict[tuple[int, int], list[int]] = {}
-            control = self.hwp.automation.HeadCtrl
-            while control is not None:
-                control_id = str(getattr(control, "CtrlID", ""))
-                if control_id in {"gso", "eqed", "tbl"}:
-                    value = control.GetAnchorPos(0)
-                    anchor = (
-                        int(value.Item("List")),
-                        int(value.Item("Para")),
-                        int(value.Item("Pos")),
-                    )
-                    movable_by_paragraph.setdefault(anchor[:2], []).append(anchor[2])
-                control = getattr(control, "Next", None)
-
             boundaries: dict[str, tuple[int, int, int]] = {}
             for field_name, field_anchor in anchors.items():
                 question_id = parse_question_field(field_name)
-                leading = movable_by_paragraph.get(field_anchor[:2], ())
+                first_movable = self._control_layout.first_movable.get(field_anchor[:2])
                 if (
                     question_id is None
                     or (
                         question_id == first_question
                         and field_anchor[1] == 0
                     )
-                    or not any(position < field_anchor[2] for position in leading)
+                    or first_movable is None or first_movable >= field_anchor[2]
                 ):
                     boundaries[field_name] = field_anchor
                     continue
@@ -283,14 +308,20 @@ class QuestionFieldManager:
             raise HwpAutomationError(f"Unknown field: {name}") from error
 
     def next_boundary(self, question_id: str) -> str:
-        fields = self.field_names()
+        if self._next_boundaries is None:
+            self._next_boundaries = {}
+            following = TERMINAL_FIELD
+            for name in reversed(self.field_names()):
+                qid = parse_question_field(name)
+                if qid is not None:
+                    self._next_boundaries[qid] = following
+                    following = name
+                elif name == TERMINAL_FIELD or name.startswith(FIXED_FIELD_PREFIX):
+                    following = name
         try:
-            index = fields.index(question_field(question_id))
-        except ValueError as error:
+            return self._next_boundaries[question_id]
+        except KeyError as error:
             raise HwpAutomationError(f"Unknown question ID: {question_id}") from error
-        return next((name for name in fields[index + 1:] if name == TERMINAL_FIELD
-                     or name.startswith(FIXED_FIELD_PREFIX) or parse_question_field(name) is not None),
-                    TERMINAL_FIELD)
 
     def select_between_fields(
         self, start_name: str, end_name: str
@@ -375,59 +406,41 @@ class QuestionFieldManager:
             )
         return old_label, new_label
 
-    def question_control_summaries(self) -> dict[str, dict[str, int]]:
-        """Count movable native controls owned by each question block.
-
-        Anchors are resolved to the top-level body list so that controls inside
-        tables or grouped objects are still attributed to their visible
-        question.  This catches a floating picture that remains elsewhere even
-        when the document-wide control totals are unchanged.
-        """
+    def control_inventory(self, *, limit: int | None = 10_000) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+        """Collect global totals and per-block object ownership in the same native pass."""
+        layout = ControlLayout.read(self.hwp, inventory=True, limit=limit)
+        self._control_layout = layout
         order = self.ordered_question_ids()
-        boundaries = {
-            question_id: self.block_boundary_position(question_field(question_id))
-            for question_id in order
-        }
-        ends = {qid: self.block_boundary_position(self.next_boundary(qid)) for qid in order}
-        result = {question_id: Counter() for question_id in order}
-        movable_control_ids = {"gso", "eqed", "tbl"}
-
-        control = self.hwp.automation.HeadCtrl
-        while control is not None:
-            control_id = str(getattr(control, "CtrlID", ""))
-            if control_id in movable_control_ids:
-                direct = control.GetAnchorPos(0)
-                if control_id == "tbl" and int(direct.Item("List")) != 0:
-                    control = getattr(control, "Next", None)
-                    continue
-                value = control.GetAnchorPos(1)
-                anchor = (
-                    int(value.Item("List")),
-                    int(value.Item("Para")),
-                    int(value.Item("Pos")),
-                )
-                for question_id in order:
-                    if boundaries[question_id] <= anchor < ends[question_id]:
-                        description = str(
-                            getattr(control, "UserDesc", "")
-                        ).strip()
-                        key = (
-                            f"{control_id}:{description}"
-                            if description
-                            else control_id
-                        )
-                        result[question_id][key] += 1
+        starts = [self.block_boundary_position(question_field(qid)) for qid in order]
+        ends = [self.block_boundary_position(self.next_boundary(qid)) for qid in order]
+        ranges = list(zip(starts, ends))
+        ordered = all(first <= last for first, last in ranges) and all(
+            end <= start for end, start in zip(ends, starts[1:])
+        )
+        results = {qid: Counter() for qid in order}
+        for anchor, key in layout.owned_anchors:
+            if ordered:
+                index = bisect_right(starts, anchor) - 1
+                if index >= 0 and anchor < ends[index]:
+                    results[order[index]][key] += 1
+            else:
+                # Leading shapes in shared paragraphs can expand a boundary
+                # before its predecessor. Retain the document-order match.
+                for qid, (first, last) in zip(order, ranges):
+                    if first <= anchor < last:
+                        results[qid][key] += 1
                         break
-            control = getattr(control, "Next", None)
-        return {
-            question_id: dict(sorted(summary.items()))
-            for question_id, summary in result.items()
+        return dict(sorted(layout.totals.items())), {
+            qid: dict(sorted(counts.items())) for qid, counts in results.items()
         }
+
+    def question_control_summaries(self) -> dict[str, dict[str, int]]:
+        return self.control_inventory(limit=None)[1]
 
     def move_before(
         self,
         question_id: str,
-        destination_id: str,
+        destination_id: str | None,
         *,
         on_progress: Callable[[str], None] | None = None,
         step_delay: float = 0.0,
@@ -435,8 +448,22 @@ class QuestionFieldManager:
         if question_id == destination_id:
             raise ValueError("A question cannot be moved before itself")
         order_before = self.ordered_question_ids()
-        if question_id not in order_before or destination_id not in order_before:
-            raise HwpAutomationError("Source or destination question ID is missing")
+        fixed_target = destination_id is not None and destination_id.startswith(FIXED_FIELD_PREFIX)
+        if question_id not in order_before:
+            raise HwpAutomationError("Source question ID is missing")
+        if fixed_target:
+            layout = self.block_layout()
+            if destination_id not in layout:
+                raise HwpAutomationError("Fixed template boundary is missing")
+            before_fixed = layout[:layout.index(destination_id)]
+            insertion_index = sum(qid in order_before and qid != question_id for qid in before_fixed)
+            destination_field = destination_id
+        else:
+            remaining = [qid for qid in order_before if qid != question_id]
+            if destination_id is not None and destination_id not in remaining:
+                raise HwpAutomationError("Destination question ID is missing")
+            insertion_index = remaining.index(destination_id) if destination_id is not None else len(remaining)
+            destination_field = question_field(destination_id) if destination_id is not None else TERMINAL_FIELD
 
         self.select_question(question_id)
         if on_progress is not None:
@@ -455,20 +482,27 @@ class QuestionFieldManager:
         if on_progress is not None:
             on_progress(f"{question_id} 문항 잘라내기")
 
-        destination_position = self.block_boundary_position(
-            question_field(destination_id)
-        )
+        destination_position = self.block_boundary_position(destination_field)
         self.hwp.set_position(destination_position)
         self.hwp.paste()
         self.invalidate_cache()
         if on_progress is not None:
-            on_progress(f"{question_id} → {destination_id} 앞에 붙여넣기")
+            on_progress(f"{question_id} → {destination_id + ' 앞' if destination_id else '마지막'}에 붙여넣기")
         self.hwp.visual_step(step_delay)
         order_after = self.ordered_question_ids()
         expected_order = list(order_before)
         expected_order.remove(question_id)
-        destination_index = expected_order.index(destination_id)
-        expected_order.insert(destination_index, question_id)
+        cut_order = tuple(expected_order)
+        expected_order.insert(insertion_index, question_id)
+        deadline = time.monotonic() + 1.5
+        while order_after == cut_order and time.monotonic() < deadline:
+            # Hangul can publish the pasted field after Run("Paste") returns.
+            time.sleep(0.035)
+            pythoncom.PumpWaitingMessages()
+            self.invalidate_cache()
+            order_after = self.ordered_question_ids()
+        if order_after == cut_order:
+            raise MissingPastedQuestion(f"{question_id} 문항을 붙여넣은 결과가 한글에 나타나지 않았습니다.")
         if order_after != tuple(expected_order):
             raise HwpAutomationError(
                 f"Unexpected order after move: {order_after!r}; "
@@ -476,7 +510,7 @@ class QuestionFieldManager:
             )
         return MoveAudit(
             question_id=question_id,
-            destination_id=destination_id,
+            destination_id=destination_id if destination_id is not None else TERMINAL_FIELD,
             order_before=order_before,
             order_after=order_after,
             selected_fields=selected_fields,

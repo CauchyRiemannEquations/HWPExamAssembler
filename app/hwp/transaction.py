@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 
 from app.hwp.application import HwpApplication, HwpAutomationError
-from app.hwp.fields import QuestionFieldManager, question_field
+from app.hwp.fields import MissingPastedQuestion, QuestionFieldManager, question_field
 from app.hwp.numbering import (
     NumberingStyleProfile,
     capture_numbering_style,
@@ -76,6 +76,7 @@ def apply_reorder_transaction(
     step_delay: float = 0.0,
     allow_deletions: bool = False,
     expected_sha256: str | None = None,
+    on_verified: Callable[[QuestionFieldManager, dict[str, dict[str, int]]], None] | None = None,
 ) -> ReorderTransactionAudit:
     """Apply reorder and numbering atomically to an existing editable copy.
 
@@ -122,8 +123,7 @@ def apply_reorder_transaction(
         )
         if deleted_question_ids and not allow_deletions:
             raise ValueError("문항 삭제가 허용되지 않은 작업입니다.")
-        controls_before = hwp.control_summary()
-        question_controls_before = manager.question_control_summaries()
+        controls_before, question_controls_before = manager.control_inventory()
         deleted_owned_fields: dict[str, tuple[str, ...]] = {}
         for question_id in reversed(deleted_question_ids):
             order_before_delete = manager.ordered_question_ids()
@@ -148,12 +148,22 @@ def apply_reorder_transaction(
                 raise HwpAutomationError(
                     f"문항 삭제 후 순서 검증 실패: {question_id}"
                 )
-        reorder = apply_permutation(
-            manager,
-            requested_order,
-            on_progress=on_progress,
-            step_delay=step_delay,
-        )
+        for attempt in range(2):
+            try:
+                reorder = apply_permutation(
+                    manager, requested_order, on_progress=on_progress, step_delay=step_delay,
+                )
+                break
+            except MissingPastedQuestion:
+                if attempt or deleted_question_ids:
+                    raise
+                # Discard the partially cut scratch tab. Never Paste twice into
+                # it. Restart from the verified, untouched native input once.
+                hwp.reset_documents()
+                if sha256(working) != before_hash:
+                    raise
+                hwp.open(working)
+                manager = QuestionFieldManager(hwp)
         number_mapping = renumber_visible_questions(
             manager,
             numbered_question_ids,
@@ -162,6 +172,7 @@ def apply_reorder_transaction(
             step_delay=step_delay,
         )
         numbered_targets = numbered_field_targets(manager, numbered_question_ids)
+        expected_layout = manager.block_layout()
         if on_progress is not None:
             on_progress("변경 내용 저장")
         # FileSave follows the user's default format and can open a modal
@@ -177,8 +188,9 @@ def apply_reorder_transaction(
         hwp.open(saved_copy)
         manager = QuestionFieldManager(hwp)
         reopened_order = manager.ordered_question_ids()
-        controls_after = hwp.control_summary()
-        question_controls_after = manager.question_control_summaries()
+        controls_after, question_controls_after = manager.control_inventory()
+        if manager.block_layout() != expected_layout:
+            raise HwpAutomationError("저장 후 고정 양식 영역의 위치가 달라졌습니다.")
         if reopened_order != requested_order:
             raise HwpAutomationError(
                 f"Reopened order mismatch: {reopened_order!r}; "
@@ -227,6 +239,8 @@ def apply_reorder_transaction(
                         raise HwpAutomationError(
                             f"삭제한 문항의 내부 ID가 남아 있습니다: {field_name}"
                         )
+        if on_verified is not None:
+            on_verified(manager, question_controls_after)
         hwp.reset_documents()
     except Exception:
         try:

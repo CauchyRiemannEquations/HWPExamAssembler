@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QApplication, QInputDialog, QListWidget, QListWidgetItem, QMenu
@@ -20,6 +20,7 @@ class QuestionListWidget(QListWidget):
         super().__init__(parent)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setItemDelegate(QuestionRowDelegate(self))
+        self.setUniformItemSizes(True)
         self.setDropIndicatorShown(False)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -174,8 +175,21 @@ class QuestionListWidget(QListWidget):
             self.move_selected_to(position - 1)
 
     def set_difficulties(self, values: dict[str, str]) -> None:
+        if values == self.difficulties:
+            return
         self.difficulties = dict(values)
-        self.refresh_labels()
+        for row in range(self.count()):
+            item = self.item(row)
+            question = item.data(QUESTION_ROLE)
+            if item.data(LEVEL_ROLE) != self.difficulties.get(question.id, "미지정"):
+                self._update_row_text(item, question, item.data(NUMBER_ROLE))
+
+    def _update_row_text(self, item, question, number):
+        level = self.difficulties.get(question.id, "미지정")
+        kind = "공통묶음" if question.kind == "group" else "문항"
+        manual = " · 직접 입력 필요" if question.manual_required else ""
+        item.setData(LEVEL_ROLE, level)
+        item.setText(f"{number:<7} [난이도: {level}]   {question.id} [{kind}{manual}]   {question.preview}")
 
     def _context_menu(self, position) -> None:
         item = self.itemAt(position)
@@ -269,20 +283,13 @@ class QuestionListWidget(QListWidget):
                 f"{name.split(':', 1)[-1]} {count}"
                 for name, count in question.controls.items()
             ) or "개체 없음"
-            kind_text = "공통묶음" if question.kind == "group" else "문항"
-            manual_text = " · 직접 입력 필요" if question.manual_required else ""
             count_text = (
                 f" · 선택형 {question.objective_count} · 서답형 {question.written_count}"
                 if question.kind == "group"
                 else ""
             )
             item.setData(NUMBER_ROLE, number)
-            item.setData(LEVEL_ROLE, self.difficulties.get(question.id, "미지정"))
-            item.setText(
-                f"{number:<7} [난이도: {self.difficulties.get(question.id, '미지정')}]   "
-                f"{question.id} [{kind_text}{manual_text}]   "
-                f"{question.preview}"
-            )
+            self._update_row_text(item, question, number)
             child_text = (
                 f"\n하위 QID: {' '.join(question.child_ids)}" if question.child_ids else ""
             )
@@ -320,6 +327,17 @@ class QuestionListWidget(QListWidget):
         rows = self._selected_rows()
         if not rows or not 0 <= final_row <= self.count() - len(rows):
             return False
+        if rows[-1] - rows[0] + 1 == len(rows):
+            if rows[0] == final_row:
+                return False
+            parent = QModelIndex()
+            destination = final_row if final_row < rows[0] else final_row + len(rows)
+            if self.model().moveRows(parent, rows[0], len(rows), parent, destination):
+                self.refresh_labels()
+                if self.currentItem():
+                    self.scrollToItem(self.currentItem())
+                self.order_changed.emit()
+                return True
         selected = [self.item(row) for row in rows]
         remaining = [self.item(row) for row in range(self.count()) if not self.item(row).isSelected()]
         return self._reorder(remaining[:final_row] + selected + remaining[final_row:])
@@ -330,6 +348,8 @@ class QuestionListWidget(QListWidget):
             return False
         if rows[0] + offset < 0 or rows[-1] + offset >= self.count():
             return False
+        if rows[-1] - rows[0] + 1 == len(rows):
+            return self.move_selected_to(rows[0] + offset)
         items = [self.item(row) for row in range(self.count())]
         for row in (reversed(rows) if offset > 0 else rows):
             item = items.pop(row)

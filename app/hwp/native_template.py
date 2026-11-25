@@ -109,7 +109,7 @@ class NativeTemplate:
         self._com = None
         self._thread = threading.get_ident()
         self._records = ()
-        self._digest = None
+        self.source_sha256 = None
 
     def _same_thread(self):
         if threading.get_ident() != self._thread:
@@ -132,9 +132,8 @@ class NativeTemplate:
         self.close()
         self.source_path, self.working_path = source, copy
         with copy.open("rb") as stream:
-            self._digest = hashlib.file_digest(stream, "sha256").digest()
-        self.reopen()
-        return copy
+            self.source_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
+        return self._open_working_copy()
 
     def _exact(self, doc):
         name = doc.FullName
@@ -173,7 +172,7 @@ class NativeTemplate:
         if not self.working_path or not self.working_path.is_file():
             raise TemplateWindowError("다시 열 작업 사본이 없습니다.")
         with self.working_path.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").digest() != self._digest:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != self.source_sha256:
                 raise TemplateWindowError("작업 사본 파일이 변경되었습니다. 원본 양식을 다시 선택하세요.")
 
     def reopen(self):
@@ -183,6 +182,9 @@ class NativeTemplate:
             self.show()
             return self.working_path
         self.close()
+        return self._open_working_copy()
+
+    def _open_working_copy(self):
         import pythoncom
         import win32com.client
         pythoncom.CoInitialize()
@@ -214,9 +216,10 @@ class NativeTemplate:
 
     def show(self):
         self._same_thread()
-        if self.state() == "closed":
+        state = self.state()
+        if state == "closed":
             raise TemplateWindowError("양식 작업 사본을 다시 열어 주세요.")
-        if self.state() != "active":
+        if state != "active":
             self._doc.SetActive_XHwpDocument()
             self._com.PumpWaitingMessages()
             time.sleep(0.04)

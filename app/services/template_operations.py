@@ -93,7 +93,7 @@ def _added_controls(
     }
 
 
-def analyze_user_template(session: LiveImportSession) -> TemplateAnalysis:
+def analyze_user_template(session: LiveImportSession, *, template_xml=None) -> TemplateAnalysis:
     """Inspect the working copy without deleting or rewriting any content."""
     if session.hwp is None or session.target_document is None:
         raise RuntimeError("양식 작업 사본이 열려 있지 않습니다.")
@@ -103,7 +103,7 @@ def analyze_user_template(session: LiveImportSession) -> TemplateAnalysis:
     )
     if getattr(session, "format_report", None) is None:
         try:
-            session.format_report = capture_format_report(session.hwp)
+            session.format_report = capture_format_report(session.hwp, xml=template_xml)
         except Exception as error:
             session._progress(f"양식 서식 정보를 읽을 수 없습니다: {error}")
     records = scan_paragraphs(session.hwp)
@@ -325,7 +325,10 @@ def finalize_template_setup(session: LiveImportSession) -> None:
     session.insertion_position = session.hwp.current_position()
     session._target_control_totals = session._transfer_control_summary()
     session.template_ready = True
-    session.hwp.save_document(session.target_document)
+    # Registered sessions edit a private scratch copy. Its first import is
+    # checkpointed as soon as a teacher file is added.
+    if getattr(session, "registration", None) is None:
+        session.hwp.save_document(session.target_document)
     session._progress("양식 준비 완료 · 이제 출제 파일을 수합할 수 있습니다.")
 
 

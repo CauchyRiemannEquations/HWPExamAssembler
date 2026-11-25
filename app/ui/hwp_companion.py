@@ -47,20 +47,23 @@ class CompanionWorker(QObject):
             if operation == "find":
                 self.completed.emit(operation, find_open_document(*args))
                 return
-            if operation == "open":
+            if operation in {"open", "attach"}:
                 self._release()
                 self.session = self.factory(self.service)
             if self.session is None:
                 raise RuntimeError("연결한 한글 문서가 닫혔습니다.")
-            action = {
-                "open": self.session.open,
-                "apply": self.session.apply,
-                "navigate": self.session.navigate,
-                "refresh": self.session.refresh,
-                "probe": self.session.probe,
-            }[operation]
-            result = action(*args)
-            if operation == "probe" and result == "closed":
+            if operation == "attach":
+                result = self.session.open(*args, only_if_open=True)
+            else:
+                action = {
+                    "open": self.session.open,
+                    "apply": self.session.apply,
+                    "navigate": self.session.navigate,
+                    "refresh": self.session.refresh,
+                    "probe": self.session.probe,
+                }[operation]
+                result = action(*args)
+            if (operation == "probe" and result == "closed") or (operation == "attach" and result is None):
                 self._release()
             self.completed.emit(operation, result)
             if operation == "apply":
@@ -68,7 +71,7 @@ class CompanionWorker(QObject):
                 if warning:
                     self.warning.emit(warning)
         except Exception as error:
-            if operation == "open":
+            if operation in {"open", "attach"}:
                 try:
                     self._release()
                 except Exception:

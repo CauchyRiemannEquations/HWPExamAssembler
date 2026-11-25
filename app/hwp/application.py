@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
-from bisect import bisect_right
 import ctypes
 from pathlib import Path
 import time
@@ -220,19 +218,9 @@ class HwpApplication:
         return "" if value is None else str(value)
 
     def control_summary(self, *, limit: int = 10_000) -> dict[str, int]:
-        counts: Counter[str] = Counter()
-        control = self.automation.HeadCtrl
-        visited = 0
-        while control is not None:
-            control_id = str(getattr(control, "CtrlID", "<unknown>"))
-            description = str(getattr(control, "UserDesc", "")).strip()
-            key = f"{control_id}:{description}" if description else control_id
-            counts[key] += 1
-            visited += 1
-            if visited >= limit:
-                raise HwpAutomationError("Control traversal limit exceeded")
-            control = getattr(control, "Next", None)
-        return dict(sorted(counts.items()))
+        from .control_layout import count_controls
+
+        return count_controls(self, transfer=False, limit=limit)
 
     def transfer_control_summary(self, *, limit: int = 10_000) -> dict[str, int]:
         """Count native controls using HWP clipboard-stable table semantics.
@@ -245,25 +233,9 @@ class HwpApplication:
         drawings remain individually significant even inside tables, so they
         are still counted at every list level.
         """
-        counts: Counter[str] = Counter()
-        control = self.automation.HeadCtrl
-        visited = 0
-        while control is not None:
-            control_id = str(getattr(control, "CtrlID", ""))
-            if control_id in {"eqed", "gso", "tbl"}:
-                direct = control.GetAnchorPos(0)
-                direct_list = int(direct.Item("List"))
-                if control_id != "tbl" or direct_list == 0:
-                    description = str(getattr(control, "UserDesc", "")).strip()
-                    key = (
-                        f"{control_id}:{description}" if description else control_id
-                    )
-                    counts[key] += 1
-            visited += 1
-            if visited >= limit:
-                raise HwpAutomationError("Control traversal limit exceeded")
-            control = getattr(control, "Next", None)
-        return dict(sorted(counts.items()))
+        from .control_layout import count_controls
+
+        return count_controls(self, transfer=True, limit=limit)
 
     def control_inventory(self, *, limit: int = 10_000) -> list[dict[str, object]]:
         inventory: list[dict[str, object]] = []
@@ -347,43 +319,9 @@ class HwpApplication:
         limit: int = 10_000,
     ) -> tuple[dict[str, int], ...]:
         """Count controls for ordered blocks in one HeadCtrl traversal."""
-        previous_end: tuple[int, int, int] | None = None
-        for start, end in ranges:
-            if start[0] != end[0] or start >= end:
-                raise HwpAutomationError(
-                    f"Unsafe control range: start={start!r}, end={end!r}"
-                )
-            if previous_end is not None and start < previous_end:
-                raise HwpAutomationError("Control ranges overlap or are unordered")
-            previous_end = end
-        starts = tuple(start for start, _end in ranges)
-        counts = [Counter() for _range in ranges]
-        control = self.automation.HeadCtrl
-        visited = 0
-        while control is not None:
-            control_id = str(getattr(control, "CtrlID", ""))
-            if control_id in control_ids:
-                value = control.GetAnchorPos(1)
-                anchor = (
-                    int(value.Item("List")),
-                    int(value.Item("Para")),
-                    int(value.Item("Pos")),
-                )
-                range_index = bisect_right(starts, anchor) - 1
-                if (
-                    range_index >= 0
-                    and anchor < ranges[range_index][1]
-                ):
-                    description = str(getattr(control, "UserDesc", "")).strip()
-                    key = (
-                        f"{control_id}:{description}" if description else control_id
-                    )
-                    counts[range_index][key] += 1
-            visited += 1
-            if visited >= limit:
-                raise HwpAutomationError("Control traversal limit exceeded")
-            control = getattr(control, "Next", None)
-        return tuple(dict(sorted(summary.items())) for summary in counts)
+        from .control_layout import count_control_ranges
+
+        return count_control_ranges(self, ranges, control_ids=control_ids, transfer=False, limit=limit)
 
     def transfer_control_summaries_for_ranges(
         self,
@@ -394,45 +332,9 @@ class HwpApplication:
         limit: int = 10_000,
     ) -> tuple[dict[str, int], ...]:
         """Range form of :meth:`transfer_control_summary`."""
-        previous_end: tuple[int, int, int] | None = None
-        for start, end in ranges:
-            if start[0] != end[0] or start >= end:
-                raise HwpAutomationError(
-                    f"Unsafe control range: start={start!r}, end={end!r}"
-                )
-            if previous_end is not None and start < previous_end:
-                raise HwpAutomationError("Control ranges overlap or are unordered")
-            previous_end = end
-        starts = tuple(start for start, _end in ranges)
-        counts = [Counter() for _range in ranges]
-        control = self.automation.HeadCtrl
-        visited = 0
-        while control is not None:
-            control_id = str(getattr(control, "CtrlID", ""))
-            if control_id in {"eqed", "gso", "tbl"}:
-                direct = control.GetAnchorPos(0)
-                if control_id == "tbl" and int(direct.Item("List")) != 0:
-                    control = getattr(control, "Next", None)
-                    visited += 1
-                    continue
-                value = control.GetAnchorPos(1)
-                anchor = (
-                    int(value.Item("List")),
-                    int(value.Item("Para")),
-                    int(value.Item("Pos")),
-                )
-                range_index = bisect_right(starts, anchor) - 1
-                if range_index >= 0 and anchor < ranges[range_index][1]:
-                    description = str(getattr(control, "UserDesc", "")).strip()
-                    key = (
-                        f"{control_id}:{description}" if description else control_id
-                    )
-                    counts[range_index][key] += 1
-            visited += 1
-            if visited >= limit:
-                raise HwpAutomationError("Control traversal limit exceeded")
-            control = getattr(control, "Next", None)
-        return tuple(dict(sorted(summary.items())) for summary in counts)
+        from .control_layout import count_control_ranges
+
+        return count_control_ranges(self, ranges, transfer=True, limit=limit)
 
     def transfer_anchor_exclusions(self, copy_ranges, integrity_ranges, *, limit: int = 10_000):
         """Read-only anchor evidence; call before establishing Copy selection.
@@ -444,24 +346,15 @@ class HwpApplication:
         if len(copy_ranges) != len(integrity_ranges):
             raise ValueError("Copy/integrity range counts differ")
         result = [[] for _ in copy_ranges]
-        control = self.automation.HeadCtrl
-        visited = 0
-        while control is not None:
-            ctrl_id = str(getattr(control, "CtrlID", ""))
-            if ctrl_id in {"eqed", "gso", "tbl"}:
-                direct = control.GetAnchorPos(0)
-                if ctrl_id != "tbl" or int(direct.Item("List")) == 0:
-                    value = control.GetAnchorPos(1)
-                    anchor = tuple(int(value.Item(key)) for key in ("List", "Para", "Pos"))
-                    for index, ((start, end), (check_start, check_end)) in enumerate(
-                        zip(copy_ranges, integrity_ranges, strict=True)
-                    ):
-                        if start <= anchor < end and not check_start <= anchor < check_end:
-                            result[index].append({"ctrl_id": ctrl_id, "anchor": anchor})
-            visited += 1
-            if visited >= limit:
-                raise HwpAutomationError("Control traversal limit exceeded")
-            control = getattr(control, "Next", None)
+        from .control_layout import ControlChain
+
+        chain = ControlChain(self.automation.HeadCtrl)
+        for _control, ctrl_id, anchor in chain.anchored_controls(limit, transfer=True):
+            for index, ((start, end), (check_start, check_end)) in enumerate(
+                zip(copy_ranges, integrity_ranges, strict=True)
+            ):
+                if start <= anchor < end and not check_start <= anchor < check_end:
+                    result[index].append({"ctrl_id": ctrl_id, "anchor": anchor})
         return tuple(result)
 
     def select_all(self) -> None:
@@ -790,13 +683,19 @@ class HwpApplication:
         return self._normalize_selected_position(self.automation.GetSelectedPos())
 
     def copy_selection(self) -> None:
+        self._send_selection_to_clipboard("Copy")
+
+    def cut_selection(self) -> None:
+        self._send_selection_to_clipboard("Cut")
+
+    def _send_selection_to_clipboard(self, action: str) -> None:
         # Run() may return False for clipboard actions in HWP 2022 even when
         # the action executes. Wait for Windows' clipboard generation to
         # advance so a complex equation/drawing block is fully published
         # before switching to another HWP tab.
         started = time.perf_counter()
         before = int(ctypes.windll.user32.GetClipboardSequenceNumber())
-        self.automation.Run("Copy")
+        self.automation.Run(action)
         deadline = time.perf_counter() + 1.5
         changed = False
         current = before
@@ -813,12 +712,9 @@ class HwpApplication:
         time.sleep(0.045 if changed else 0.12)
         pythoncom.PumpWaitingMessages()
 
-        if self.diagnostic is not None:
+        if self.diagnostic is not None and action == "Copy":
             self.diagnostic.emit("clipboard_copy", sequence_before=before, sequence_after=current,
                                  sequence_changed=changed, elapsed_seconds=time.perf_counter() - started)
-
-    def cut_selection(self) -> None:
-        self.automation.Run("Cut")
 
     def move_to_end(self) -> None:
         # MoveDocEnd extends an existing block selection instead of merely
@@ -1056,17 +952,30 @@ class HwpApplication:
 
     def reset_documents(self) -> None:
         """Close all documents without ending the Automation process."""
-        # Immediately after saving a document with many native controls HWP
-        # can keep an internal control-edit transaction alive for a fraction
-        # of a second.  Clear(1) then raises RPC_E_SERVERFAULT even though the
-        # document itself was saved correctly.  Leave any control selection,
-        # pump the out-of-process COM queue and retry the idempotent close.
+        # The common reorder case holds one saved scratch tab. HWP 2022 can
+        # block for seconds inside Clear(1) while tearing down native objects.
+        # Close the exact last tab first, and check for a fresh blank frame.
         last_error: Exception | None = None
         try:
             self.automation.Run("Cancel")
         except Exception:
             pass
         for attempt in range(4):
+            try:
+                docs = self.automation.XHwpDocuments
+                if int(docs.Count) == 1:
+                    doc = docs.Active_XHwpDocument
+                    if doc.FullName or doc.Modified:
+                        self.close_document(doc, discard_changes=True)
+                    if int(docs.Count) == 0 or (
+                        int(docs.Count) == 1 and not docs.Active_XHwpDocument.FullName
+                        and not docs.Active_XHwpDocument.Modified
+                    ):
+                        last_error = None
+                        break
+            except Exception:
+                # Recheck through Clear if the document bridge is settling.
+                pass
             try:
                 self.automation.Clear(1)
                 last_error = None

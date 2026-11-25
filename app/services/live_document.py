@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
 import os
@@ -19,22 +20,67 @@ from .exam_service import DocumentSnapshot
 from .external_edit import file_is_in_use
 
 
+class _ScratchWorker:
+    """Create, use and release the private HWP server on one COM apartment."""
+
+    def __init__(self):
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hwp-exam-scratch")
+        self._hwp = None
+
+    def _start(self):
+        if self._hwp is None:
+            self._hwp = HwpApplication(visible=False).__enter__()
+
+    def prewarm(self):
+        # Startup never touches a document or the clipboard. If it fails, a
+        # subsequent real operation will retry and can report a relevant error.
+        self._executor.submit(self._start)
+
+    def run(self, action):
+        return self._executor.submit(self._run, action).result()
+
+    def _run(self, action):
+        self._start()
+        try:
+            return action(self._hwp)
+        except BaseException:
+            try:
+                self._close_hwp()
+            except Exception:
+                pass  # Preserve the operation's error when the COM server disconnected.
+            raise
+
+    def _close_hwp(self):
+        hwp, self._hwp = self._hwp, None
+        if hwp is not None:
+            hwp.close()
+
+    def close(self):
+        try:
+            self._executor.submit(self._close_hwp).result()
+        finally:
+            self._executor.shutdown(wait=True)
+
+
 class LiveDocumentSession:
     """Own one apartment-local connection. All methods run on the same worker."""
 
     def __init__(self, service):
         self.service = service
         self.target = None
+        self._scratch = None
         self.last_warning = ""
 
-    def open(self, snapshot):
+    def open(self, snapshot, *, only_if_open=False):
         self.release()
         target = UserDocument(snapshot.path)
-        target.connect(file_is_in_use)
+        if not target.connect(file_is_in_use, only_if_open=only_if_open):
+            return None
         self.target = target
         try:
             fields = self._check_structure(snapshot)
             if fields.ordered_question_ids() == snapshot.order and not target.doc.Modified and sha256(target.path) == snapshot.content_sha256:
+                self._scratch_worker().prewarm()
                 return snapshot
             return self.refresh(snapshot)
         except BaseException:
@@ -53,13 +99,14 @@ class LiveDocumentSession:
         actual = fields.ordered_question_ids()
         if len(actual) != len(set(actual)) or set(actual) != set(expected.order) or (exact_order and actual != expected.order):
             raise HwpAutomationError("한글에서 문항 순서나 내부 ID가 달라졌습니다. 한글 편집본을 확인하세요.")
-        for question in expected.questions:
-            children = tuple(child.question_id for child in fields.child_question_fields(question.id))
-            if children != question.child_ids:
-                raise HwpAutomationError("공통 지문에 속한 문항이 달라져 반영할 수 없습니다.")
-        if (not target.automation.FieldExist(TERMINAL_FIELD)
-                or any(child.group_id not in expected.order for child in fields.child_question_fields())):
+        children_by_group = {}
+        for child in fields.child_question_fields():
+            children_by_group.setdefault(child.group_id, []).append(child.question_id)
+        if not target.automation.FieldExist(TERMINAL_FIELD) or children_by_group.keys() - set(actual):
             raise HwpAutomationError("문항 경계를 확인할 수 없어 반영하지 않았습니다.")
+        for question in expected.questions:
+            if tuple(children_by_group.get(question.id, ())) != question.child_ids:
+                raise HwpAutomationError("공통 지문에 속한 문항이 달라져 반영할 수 없습니다.")
         return fields
 
     def navigate(self, qid):
@@ -71,15 +118,33 @@ class LiveDocumentSession:
             manager = QuestionFieldManager(target)
             if qid not in manager.ordered_question_ids():
                 raise HwpAutomationError("한글에 해당 문항이 없습니다.")
-            target.set_position(manager.position(question_field(qid)))
+            self._show_question(manager, qid)
+
+    @staticmethod
+    def _show_question(manager, qid):
+        # Move the native viewport without bringing Hangul in front of the list.
+        manager.hwp.set_position(manager.position(question_field(qid)))
+
+    def _scratch_worker(self):
+        if self._scratch is None:
+            self._scratch = _ScratchWorker()
+        return self._scratch
+
+    def _close_scratch(self):
+        scratch, self._scratch = self._scratch, None
+        if scratch is not None:
+            scratch.close()
 
     def _read_copy(self, file, original):
-        with HwpApplication(visible=False) as reader:
+        def read(reader):
             reader.open(file)
             fields = QuestionFieldManager(reader)
-            return tuple(self.service.read_open_questions(
+            questions = tuple(self.service.read_open_questions(
                 reader, fields, fields.ordered_question_ids(), self.service._import_metadata(original)
             ))
+            reader.reset_documents()
+            return questions
+        return self._scratch_worker().run(read)
 
     def refresh(self, expected):
         self._check_structure(expected)
@@ -107,21 +172,25 @@ class LiveDocumentSession:
     def apply(self, snapshot, order, focus_qid=None):
         order = tuple(order)
         self.last_warning = ""
-        self._check_structure(snapshot, exact_order=True)
         target = self.target
-        source = target.path
+        if target is None or target.path != snapshot.path.resolve():
+            raise HwpAutomationError("선택한 편집본과 연결한 한글 문서가 다릅니다.")
         if not order or len(order) != len(set(order)) or not set(order).issubset(snapshot.order):
             raise ValueError("반영할 문항 순서가 올바르지 않습니다.")
         if order == snapshot.order:
+            self._check_structure(snapshot, exact_order=True)
             return self.refresh(snapshot)
-        if int(target.doc.EditMode) != 1 or not os.access(source, os.W_OK):
-            raise PermissionError("한글 편집본이 읽기 전용입니다.")
 
         # Save only the selected document. Preserve both the old on-disk
         # document and the teacher's current, possibly newer, edits.
+        source = target.path
         backups = source.parent / "backup"
         with target.guard_input():
-            self._check_structure(snapshot, exact_order=True)
+            if int(target.doc.EditMode) != 1 or not os.access(source, os.W_OK):
+                raise PermissionError("한글 편집본이 읽기 전용입니다.")
+            manager = self._check_structure(snapshot, exact_order=True)
+            if focus_qid in order:
+                self._show_question(manager, focus_qid)
             if target.doc.Modified:
                 # Serialize pending native equation/shape edits before checkpointing.
                 target.content_fingerprint()
@@ -141,13 +210,22 @@ class LiveDocumentSession:
             shutil.copyfile(backup, staged)
             profile = self.service._numbering_profile_for(source)
             numbered = frozenset(snapshot.numbered_ids)
-            with HwpApplication(visible=False) as worker:
-                audit = apply_reorder_transaction(
+            questions = []
+
+            def read_verified(manager, controls):
+                # Use the verification tab while it is open, so updating the
+                # list does not start another Hangul process on every drop.
+                questions.extend(self.service.read_open_questions(
+                    manager.hwp, manager, order, self.service._import_metadata(source), controls=controls
+                ))
+
+            def reorder(worker):
+                return apply_reorder_transaction(
                     worker, staged, order, tuple(qid for qid in order if qid in numbered),
                     numbering_style=profile, backup_dir=directory / "backup", work_dir=directory,
-                    allow_deletions=True, expected_sha256=before,
+                    allow_deletions=True, expected_sha256=before, on_verified=read_verified,
                 )
-            questions = self._read_copy(staged, source)
+            audit = self._scratch_worker().run(reorder)
             final_hash = sha256(staged)
             if tuple(q.id for q in questions) != order or final_hash != audit.after_sha256:
                 raise HwpAutomationError("재배열 사본의 문항 순서를 확인할 수 없습니다.")
@@ -155,13 +233,13 @@ class LiveDocumentSession:
             # The short publication phase operates on the bound IXHwpDocument,
             # preserving its DocumentID and HWND across both native Open calls.
             self._publish(staged, backup, before, final_hash, order, snapshot, checkpoint)
-            result = DocumentSnapshot(source, questions, content_sha256=final_hash)
+            result = DocumentSnapshot(source, tuple(questions), content_sha256=final_hash)
             warnings = []
             if focus_qid in order:
                 try:
                     target.require_target()
                     manager = QuestionFieldManager(target)
-                    target.set_position(manager.position(question_field(focus_qid)))
+                    self._show_question(manager, focus_qid)
                 except Exception as error:
                     warnings.append(f"선택 문항 위치 이동 실패: {error}")
             try:
@@ -184,8 +262,10 @@ class LiveDocumentSession:
 
     def _publish(self, staged, backup, before_hash, final_hash, order, snapshot, checkpoint):
         target = self.target
+        if target is None or target.path != snapshot.path.resolve():
+            raise HwpAutomationError("재배열을 준비하는 동안 연결한 한글 문서가 바뀌었습니다.")
         source = target.path
-        fd, name = tempfile.mkstemp(dir=source.parent, prefix=".school-reorder-", suffix=".tmp")
+        fd, name = tempfile.mkstemp(dir=source.parent, prefix=".exam-reorder-", suffix=".tmp")
         os.close(fd)
         incoming = Path(name)
         try:
@@ -193,7 +273,8 @@ class LiveDocumentSession:
             if sha256(incoming) != final_hash:
                 raise HwpAutomationError("재배열 사본의 파일 지문이 다릅니다.")
             with target.guard_input():
-                self._check_structure(snapshot, exact_order=True)
+                # The checkpoint covers the entire native document, including
+                # the QIDs and group structure validated before staging.
                 if target.content_fingerprint() != checkpoint:
                     raise HwpAutomationError("재배열을 준비하는 동안 한글 내용이 달라져 반영하지 않았습니다. 다시 시도하세요.")
                 if sha256(source) != before_hash:
@@ -244,6 +325,9 @@ class LiveDocumentSession:
             target.reopen(staged, source, unchanged_content=displayed_content)
 
     def release(self):
-        if self.target:
-            self.target.close()
-            self.target = None
+        try:
+            self._close_scratch()
+        finally:
+            if self.target:
+                self.target.close()
+                self.target = None

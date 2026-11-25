@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 import json
@@ -364,15 +365,18 @@ class LiveImportSession:
             # the initial blank XHwpDocument during a visible import session.
             self.hwp.open_via_object(working)
             self.target_document = self.hwp.active_document()
-            analysis = template_operations.analyze_user_template(self)
+            template_xml = None
             if plan:
-                plan.prepare(self)
+                self.hwp.require_active_document(self.target_document, operation="등록 양식 읽기 전")
+                template_xml = self.hwp.automation.GetTextFile("HWPML2X", "")
+            analysis = template_operations.analyze_user_template(self, template_xml=template_xml)
+            if plan:
+                plan.prepare(self, template_xml)
             if plan or not defer_template_setup:
                 self.finalize_template_setup()
             self._progress(
                 f"문항 구성 유형: {self.document_type.label}"
             )
-            self.hwp.visual_step(0.12)
             return analysis
         except Exception:
             self.hwp.close()
@@ -421,8 +425,12 @@ class LiveImportSession:
                 f"expected={expected_order!r}, actual={actual_order!r}"
             )
         expected_all_children: list[tuple[str, str]] = []
+        children = manager.child_question_fields()
+        by_group = defaultdict(list)
+        for child in children:
+            by_group[child.group_id].append(child)
         for item in self.registered:
-            actual_children = manager.child_question_fields(item.id)
+            actual_children = by_group.get(item.id, ())
             actual_child_ids = tuple(child.question_id for child in actual_children)
             self._diag("qid_children", phase=phase, unit_id=item.id, expected=item.child_ids,
                        actual=actual_child_ids, match=actual_child_ids == item.child_ids)
@@ -443,7 +451,7 @@ class LiveImportSession:
             expected_all_children.extend((item.id, child_id) for child_id in item.child_ids)
         actual_all_children = [
             (child.group_id, child.question_id)
-            for child in manager.child_question_fields()
+            for child in children
         ]
         if actual_all_children != expected_all_children:
             raise RuntimeError(
@@ -472,7 +480,6 @@ class LiveImportSession:
         self._require_non_target_bridge(
             self.source_document, operation="출제 파일 열기 후"
         )
-        self.hwp.visual_step(0.12)
 
     def _close_source_document(self) -> None:
         """Discard one temporary teacher-document tab after its import."""
@@ -651,7 +658,6 @@ class LiveImportSession:
                 self._progress(
                     f"{next_id} 붙여넣기 개체 검증 완료: {verified_text}"
                 )
-            self.hwp.visual_step(0.06 if self.hwp.visible else 0.0)
 
         if self.diagnostic is not None:
             self.diagnostic.context = {}
@@ -755,7 +761,6 @@ class LiveImportSession:
         self.registered.append(result)
         self._diag("question_result", success=True, placeholder=False)
         self._progress(f"{normalized_id} 시험지 문제 영역에 붙여넣기 완료")
-        self.hwp.visual_step(0.08)
         self._require_non_target_bridge(
             self.source_document, operation=f"{normalized_id} 등록 완료 후"
         )
@@ -801,7 +806,7 @@ class LiveImportSession:
             numbered_ids,
             style=profile,
             on_progress=self._progress,
-            step_delay=0.05 if self.hwp.visible else 0.0,
+            step_delay=0.0,
         )
         self._stage("final_block")
         self._append_final_check_box()
@@ -875,15 +880,17 @@ class LiveImportSession:
                 self._diag("saved_question_controls", unit_id=unit_id,
                            **comparison(controls.get(unit_id, {}), disk_controls.get(unit_id, {}), None))
             disk_final_check_layout: dict[str, int] | None = None
-            disk_document_controls = self._transfer_control_summary()
+            disk_xml = None
             if plan:
-                plan.verify_preserved(self.hwp)
+                disk_xml = self.hwp.automation.GetTextFile("HWPML2X", "")
+                plan.verify_preserved(self.hwp, xml=disk_xml)
             if self.format_report is not None:
                 try:
-                    self.format_check = compare_output(self.format_report, capture_format_report(self.hwp))
+                    self.format_check = compare_output(self.format_report, capture_format_report(self.hwp, xml=disk_xml))
                 except Exception as error:
                     self._progress(f"서식 비교 기록을 저장하지 못했습니다: {error}")
             if final_block_added:
+                disk_document_controls = self._transfer_control_summary()
                 if expected_document_controls is not None and (
                     disk_document_controls != expected_document_controls
                 ):

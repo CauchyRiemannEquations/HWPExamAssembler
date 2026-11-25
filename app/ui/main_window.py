@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtCore import QItemSelectionModel, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QComboBox,
     QDialog,
@@ -277,7 +278,8 @@ class MainWindow(QMainWindow):
             "처음에는 ‘내 학교 양식 선택’에서 양식 파일을 여세요. 한글에서 예시 문항과 새 문항을 넣을 자리를 확인하면 "
             "같은 양식을 다음 수합에도 사용할 수 있습니다. 출제 파일을 추가하고 ‘저장하고 편집기로’를 누르세요.\n\n"
             "편집기에서는 번호를 누르거나 문항을 끌어 순서를 바꿉니다. 난이도는 선택하면 저장됩니다. "
-            "‘한글에서 확인’을 누른 뒤에는 한글을 열어 둔 채 순서를 바꾸고 반영할 수 있습니다."
+            "수합본이 한글에 열려 있으면 바뀐 순서가 자동으로 저장되고 옮긴 문항이 표시됩니다. "
+            "문항 삭제는 ‘순서·삭제 반영’을 눌러 확정하세요."
         )
         dialog.addButton("닫기", QMessageBox.ButtonRole.RejectRole)
         dialog.exec()
@@ -296,7 +298,7 @@ class MainWindow(QMainWindow):
         self._save_difficulty(ids, DIFFICULTIES[index])
 
     def _save_difficulty(self, ids, level: str) -> None:
-        if self.snapshot is None or self._sync_failed or self._busy:
+        if self.snapshot is None or not self.question_list.isEnabled():
             return
         try:
             # Re-read before writing so other unchanged QIDs are preserved.
@@ -323,11 +325,16 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self._update_editor_controls()
+        if not busy and self._auto_pending and not self._auto_timer.isActive() and not self._closing:
+            self._auto_timer.start()
 
     def _update_editor_controls(self) -> None:
         available = not self._busy and not self._editing_in_hwp
         has_document = self.snapshot is not None
-        can_edit = not self._busy and has_document and not self._sync_failed
+        saving_move = (self._live_operation == "apply" and self._applying_order is not None
+                       and len(self._applying_order) == len(self._original_order))
+        can_edit = (has_document and not self._sync_failed and not self._closing
+                    and (not self._busy or saving_move or self._live_operation == "attach"))
         order = self.question_list.ordered_ids()
         selected = self.question_list.selectedItems()
         count = len(selected)
@@ -356,9 +363,13 @@ class MainWindow(QMainWindow):
         self.delete_button.setEnabled(can_edit and 0 < count < len(order))
         self.reset_button.setEnabled(can_edit and dirty)
         self.undo_button.setEnabled(can_edit and bool(self._edit_history))
-        self.apply_button.setVisible(dirty)
-        self.apply_button.setEnabled(can_edit and dirty)
-        self.apply_button.setText("열린 한글에 순서 반영" if self._editing_in_hwp else "순서만 반영")
+        manual = not self._editing_in_hwp or self._live_issue or self._native_order_conflict or self._deletions_pending()
+        self.apply_button.setVisible(dirty and manual)
+        self.apply_button.setEnabled(can_edit and dirty and manual and not self._busy)
+        if self._deletions_pending():
+            self.apply_button.setText("순서·삭제 반영")
+        else:
+            self.apply_button.setText("순서 반영 다시 시도" if self._editing_in_hwp else "순서만 반영")
         if self._editing_in_hwp:
             self.edit_in_hwp_button.setText("선택 문항 보기")
         else:
@@ -381,6 +392,7 @@ class MainWindow(QMainWindow):
             anchor = item.data(Qt.ItemDataRole.UserRole).id if item else None
             self._push_edit(OrderEdit(self._last_order, anchor))
             self._last_order = current
+            self._schedule_order_sync(anchor)
         self._update_order_status()
 
     def _restore_order(self) -> None:
@@ -397,6 +409,7 @@ class MainWindow(QMainWindow):
             self._last_order = edit.order
             if edit.anchor in edit.order:
                 self.question_list.setCurrentRow(edit.order.index(edit.anchor))
+            self._schedule_order_sync(edit.anchor)
         else:
             try:
                 values = load_difficulties(self.snapshot.path)
@@ -444,9 +457,37 @@ class MainWindow(QMainWindow):
         self._live_operation = None
         self._after_probe = None
         self._closing = False
+        self._applying_order = None
+        self._move_anchor = None
+        self._auto_pending = False
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(225)
+        self._auto_timer.timeout.connect(self._sync_moved_order)
         self._hwp_timer = QTimer(self)
         self._hwp_timer.setInterval(1000)
         self._hwp_timer.timeout.connect(self._poll_hwp_session)
+
+    def _schedule_order_sync(self, anchor) -> None:
+        self._move_anchor = anchor
+        self._live_issue = False
+        self._auto_pending = True
+        self._auto_timer.start()
+
+    def _sync_moved_order(self) -> None:
+        if not self._auto_pending or self._closing or self._busy:
+            return
+        if QApplication.activeModalWidget() is not None:
+            self._auto_timer.start()
+            return
+        self._auto_pending = False
+        if (not self._dirty_order() or self._deletions_pending() or self._sync_failed
+                or self._live_issue or self._native_order_conflict):
+            return
+        if self._editing_in_hwp:
+            self._apply_live_order()
+        else:
+            self._request_companion("attach", self.snapshot)
 
     def _ensure_companion_worker(self) -> None:
         if self._live_thread is not None:
@@ -503,9 +544,16 @@ class MainWindow(QMainWindow):
             else:
                 self._save_order()
             return
+        if operation == "attach" and result is None:
+            self._set_busy(False)
+            self._update_order_status()
+            return
         if operation == "probe":
             deferred, self._after_probe = self._after_probe, None
             if result == "closed":
+                self._auto_pending = False
+                self._auto_timer.stop()
+                self._applying_order = None
                 self._editing_in_hwp = False
                 self._draft_on_close = self._dirty_order()
                 self._hwp_timer.stop()
@@ -523,10 +571,15 @@ class MainWindow(QMainWindow):
             elif deferred:
                 self._request_companion(deferred[0], *deferred[1])
             return
-        if operation in {"open", "apply", "refresh"}:
-            self._document_loaded(result, live=True, preserve_draft=operation != "apply")
+        if operation in {"open", "attach", "apply", "refresh"}:
+            self._document_loaded(result, live=True, preserve_draft=operation != "apply", committed=operation == "apply")
+            self._applying_order = None
             self._set_busy(False)
             self._hwp_timer.start()
+            if operation == "attach":
+                self._auto_pending = True
+                self._sync_moved_order()
+                return
             if operation == "open":
                 apply_now, self._apply_on_connect = self._apply_on_connect, False
                 if apply_now and self._dirty_order():
@@ -535,9 +588,11 @@ class MainWindow(QMainWindow):
                 if self._current_qid():
                     self._request_companion("navigate", self._current_qid())
                     return
-            if operation == "apply":
+            if operation == "apply" and not self._dirty_order():
                 self.status_label.setText("열려 있는 한글 문서에 순서를 반영했습니다.")
-            elif not self._native_order_conflict:
+            elif operation == "apply" and not self._deletions_pending():
+                self.status_label.setText("다음 문항 이동을 반영하는 중…")
+            elif operation != "apply" and not self._native_order_conflict:
                 self.status_label.setText("한글 문서가 연결되었습니다. 이 목록에서 순서와 난이도를 조정하세요.")
         else:
             self._set_busy(False)
@@ -549,13 +604,16 @@ class MainWindow(QMainWindow):
     def _live_failed(self, operation: str, details: str) -> None:
         self._live_operation = None
         self._apply_on_connect = False
-        self._after_probe = None
+        deferred, self._after_probe = self._after_probe, None
         if self._closing:
             return
-        if operation in {"apply", "refresh"}:
+        if operation in {"apply", "refresh", "attach"} or deferred is not None:
             # Inactive tabs and open Hangul dialogs reject operations too.
             # Keep the draft editable; every retry verifies the live QIDs.
             self._live_issue = True
+            self._auto_pending = False
+            self._auto_timer.stop()
+        self._applying_order = None
         if operation == "probe":
             # A busy or modal Hangul instance may temporarily reject COM
             # calls. Its session stays attached until closure is confirmed.
@@ -570,7 +628,9 @@ class MainWindow(QMainWindow):
         if not self._dirty_order() or self._sync_failed or not self._confirm_current_order():
             return
         self.status_label.setText("열린 한글 문서에 순서를 반영하는 중…")
-        self._request_companion("apply", self.snapshot, self.question_list.ordered_ids(), self._current_qid())
+        self._applying_order = self.question_list.ordered_ids()
+        anchor = self._move_anchor if self._move_anchor in self._applying_order else self._current_qid()
+        self._request_companion("apply", self.snapshot, self._applying_order, anchor)
 
     def _confirm_current_order(self) -> bool:
         if not self._native_order_conflict:
@@ -582,6 +642,9 @@ class MainWindow(QMainWindow):
 
     def _dirty_order(self) -> bool:
         return self.snapshot is not None and self.question_list.ordered_ids() != self._original_order
+
+    def _deletions_pending(self) -> bool:
+        return self.snapshot is not None and self.question_list.count() < len(self._original_order)
 
     def _allow_discard(self) -> bool:
         if not self._dirty_order():
@@ -618,6 +681,9 @@ class MainWindow(QMainWindow):
         dialog.deleteLater()
 
     def load_document(self, path: str) -> None:
+        self._auto_timer.stop()
+        self._auto_pending = False
+        self._move_anchor = None
         self.show_editor()
         self.status_label.setText(f"{Path(path).name} · 문항을 불러오는 중…")
         self.log.appendPlainText(f"[OPEN] {path}")
@@ -652,6 +718,8 @@ class MainWindow(QMainWindow):
             if self._current_qid():
                 self._request_companion("navigate", self._current_qid())
             return
+        self._auto_timer.stop()
+        self._auto_pending = False
         self._connect_document(apply_on_connect=self._dirty_order() and not self._sync_failed)
 
     def _connect_document(self, *, apply_on_connect: bool) -> None:
@@ -668,7 +736,8 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"[다시 읽기] {details}")
         self._set_busy(self._thread is not None)
 
-    def _document_loaded(self, snapshot: DocumentSnapshot, *, live: bool = False, preserve_draft: bool = False) -> None:
+    def _document_loaded(self, snapshot: DocumentSnapshot, *, live: bool = False,
+                         preserve_draft: bool = False, committed: bool = False) -> None:
         self.show_editor()
         same_document = self.snapshot is not None and self.snapshot.path == snapshot.path
         order = self.question_list.ordered_ids()
@@ -681,6 +750,11 @@ class MainWindow(QMainWindow):
         history = list(self._edit_history)
         keep_draft = same_document and (preserve_draft or self._draft_on_close) and self._dirty_order()
         self._native_order_conflict = bool(keep_draft and (self._native_order_conflict or self._original_order != snapshot.order))
+        if committed:
+            # The teacher may have moved or undone another question while Hancom
+            # was saving. Only the submitted order is acknowledged by this result.
+            keep_draft = order != snapshot.order
+            self._auto_pending = keep_draft
         self._draft_on_close = False
         self.snapshot = snapshot
         self.file_label.setText(snapshot.path.name)
@@ -700,8 +774,15 @@ class MainWindow(QMainWindow):
         self._original_order = snapshot.order
         by_id = {q.id: q for q in snapshot.questions}
         shown = order if keep_draft and all(qid in by_id for qid in order) else snapshot.order
-        self.question_list.set_questions(tuple(by_id[qid] for qid in shown))
-        if current in shown:
+        update_in_place = same_document and (committed or preserve_draft) and shown == order
+        if update_in_place:
+            # Keep a drag or row click that started while Hancom was saving.
+            for index, qid in enumerate(shown):
+                self.question_list.item(index).setData(Qt.ItemDataRole.UserRole, by_id[qid])
+            self.question_list.refresh_labels()
+        else:
+            self.question_list.set_questions(tuple(by_id[qid] for qid in shown))
+        if not update_in_place and current in shown:
             current_row = shown.index(current)
             self.question_list.setCurrentRow(current_row, QItemSelectionModel.SelectionFlag.NoUpdate)
             for index, qid in enumerate(shown):
@@ -714,7 +795,7 @@ class MainWindow(QMainWindow):
             self._edit_history = [
                 edit for edit in history
                 if (isinstance(edit, DifficultyEdit) and valid_ids.issuperset(edit.previous))
-                or (isinstance(edit, OrderEdit) and previous_order == snapshot.order
+                or (isinstance(edit, OrderEdit) and (committed or previous_order == snapshot.order)
                     and shown == order and valid_ids.issuperset(edit.order))
             ]
         self.log.appendPlainText(f"[READ] 문항 {len(snapshot.questions)}개")
@@ -747,7 +828,7 @@ class MainWindow(QMainWindow):
             self,
             "문항 삭제",
             f"선택한 문항 {', '.join(selected)}을 결과 시험지에서 삭제할까요?\n\n"
-            "순서를 반영할 때 이 파일에서도 삭제됩니다. 저장 전 문서는 자동 백업됩니다.",
+            "‘순서·삭제 반영’을 누르면 시험지에서도 삭제됩니다. 반영 전 파일은 자동 백업됩니다.",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -773,6 +854,8 @@ class MainWindow(QMainWindow):
         order = self.question_list.ordered_ids()
         changed = order != self._original_order
         state = "반영할 변경 있음" if changed else "변경 없음"
+        if changed and self._editing_in_hwp and not (self._live_issue or self._native_order_conflict or self._deletions_pending()):
+            state = "한글에 순서 반영 중…"
         deleted_count = len(self._original_order) - len(order)
         deleted_text = f" · 삭제 예정 {deleted_count}개" if deleted_count else ""
         by_id = {
@@ -808,6 +891,8 @@ class MainWindow(QMainWindow):
     def apply_current_document(self) -> None:
         if self.snapshot is None or self._busy or self._sync_failed:
             return
+        self._auto_timer.stop()
+        self._auto_pending = False
         if self._editing_in_hwp:
             self._apply_live_order()
         else:
@@ -927,6 +1012,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._hwp_timer.stop()
+        self._auto_timer.stop()
+        self._auto_pending = False
         if self._live_thread is not None:
             if not self._closing:
                 self._closing = True

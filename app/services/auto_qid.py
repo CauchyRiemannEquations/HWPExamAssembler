@@ -62,14 +62,24 @@ def _unique_output(source: Path) -> Path:
     return candidate
 
 
-def paragraph_text(hwp: HwpApplication, paragraph: int) -> str | None:
+def paragraph_text(
+    hwp: HwpApplication, paragraph: int, document_end: tuple[int, int, int] | None = None,
+) -> str | None:
+    if document_end is None:
+        # Direct reads (including the check after stripping a literal number)
+        # need the current EOF, whose character offset may just have changed.
+        hwp.move_to_end()
+        document_end = hwp.current_position()
+    if document_end[0] != 0 or not 0 <= paragraph <= document_end[1]:
+        return None
     if not hwp.automation.SetPos(0, paragraph, 0):
         return None
     # InitScan is more reliable than creating a visible selection for empty
     # paragraphs and paragraphs whose first item is a floating HWP control.
-    initialized = hwp.automation.InitScan(
-        0x00, 0x0011, paragraph, 0, paragraph + 1, 0
-    )
+    # The nonexistent paragraph after EOF produces an empty scan on Hangul
+    # even when the last paragraph contains an entire question.
+    end = document_end[1:] if paragraph == document_end[1] else (paragraph + 1, 0)
+    initialized = hwp.automation.InitScan(0x00, 0x0011, paragraph, 0, *end)
     if not initialized:
         return ""
     chunks: list[str] = []
@@ -111,7 +121,7 @@ def scan_paragraphs(
             break
         parameter = hwp.automation.HParameterSet.HParaShape
         hwp.automation.HAction.GetDefault("ParagraphShape", parameter.HSet)
-        text = paragraph_text(hwp, paragraph)
+        text = paragraph_text(hwp, paragraph, document_end)
         if text is None:
             break
         records.append(
@@ -315,14 +325,12 @@ def create_auto_qid_copy(
             hwp.set_position((0, question.paragraph, 0))
             manager.create_at_current_position(question_field(question.id))
             progress(f"{question.id} 자동 등록: {question.preview[:45]}")
-            hwp.visual_step(0.03 if visible else 0.0)
         if numbering_profile is not None:
             renumber_visible_questions(
                 manager,
                 tuple(item.id for item in detected if item.numbered),
                 style=numbering_profile,
                 on_progress=progress,
-                step_delay=0.03 if visible else 0.0,
             )
         hwp.save_document(hwp.active_document())
         hwp.reset_documents()
