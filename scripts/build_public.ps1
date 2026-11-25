@@ -26,7 +26,8 @@ $BuildArgs = @('-m', 'PyInstaller', '--noconfirm', '--onefile', '--windowed', '-
     '--add-data', "$Repo/assets/fonts/NotoSansKR-Variable.ttf;assets/fonts", '--add-data', "$Repo/assets/fonts/OFL.txt;assets/fonts",
     '--add-data', "$Repo/project/school_profile.json;project", '--add-data', "$Repo/project/target_numbering_style.json;project",
     '--add-data', "$Repo/assets/ai-template/analysis-prompt.txt;assets/ai-template", '--add-data', "$Repo/LICENSE;.",
-    '--add-data', "$Notices;.", '--hidden-import', 'pythoncom', '--hidden-import', 'pywintypes') + $HancomArgs + @("$Repo/app/main.py")
+    '--add-data', "$Notices;.", '--hidden-import', 'pythoncom', '--hidden-import', 'pywintypes',
+    '--hidden-import', 'win32timezone') + $HancomArgs + @("$Repo/app/main.py")
 & $Python @BuildArgs *> (Join-Path $Build 'build.log')
 if ($LASTEXITCODE) {
     Get-Content -LiteralPath (Join-Path $Build 'build.log') -Tail 35
