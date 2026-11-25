@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 
 from app.hwp.application import HwpApplication, HwpAutomationError
-from app.hwp.fields import MissingPastedQuestion, QuestionFieldManager, question_field
+from app.hwp.fields import QuestionFieldManager, QuestionTransferMismatch, question_field
 from app.hwp.numbering import NumberingStyleProfile
 from app.hwp.reorder import (
     ReorderAudit,
@@ -155,7 +155,7 @@ def apply_reorder_transaction(
                     manager, requested_order, on_progress=on_progress, step_delay=step_delay,
                 )
                 break
-            except MissingPastedQuestion:
+            except QuestionTransferMismatch:
                 if attempt or deleted_question_ids:
                     raise
                 # Discard the partially cut scratch tab. Never Paste twice into

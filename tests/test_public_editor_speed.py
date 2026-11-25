@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import pythoncom
 
 from app.hwp.application import HwpApplication, HwpAutomationError
-from app.hwp.fields import FIXED_FIELD_PREFIX, TERMINAL_FIELD, QuestionFieldManager, question_field
+from app.hwp.fields import FIXED_FIELD_PREFIX, TERMINAL_FIELD, QuestionFieldManager, QuestionTransferMismatch, question_field
 from app.hwp.reorder import apply_permutation
 from app.hwp.transaction import apply_reorder_transaction
 from app.hwp.user_document import UserDocument
@@ -18,6 +18,43 @@ from app.services.exam_service import ExamDocumentService, QuestionSummary
 
 
 class PublicEditorSpeedTests(unittest.TestCase):
+    def test_next_move_cannot_cancel_between_cut_and_verified_paste(self):
+        native = Mock()
+        manager = QuestionFieldManager(native)
+        fields = [question_field("A"), question_field("B")]
+        original = fields.copy()
+        native.automation.GetFieldList.side_effect = lambda _number, flags: (
+            question_field("B") if flags & 4 else "\x02".join(fields)
+        )
+        native.cut_selection.side_effect = lambda: fields.remove(question_field("B"))
+        native.paste.side_effect = lambda: fields.insert(0, question_field("B"))
+        native.selected_plain_text.return_value = "body"
+        observed = []
+        with (patch.object(manager, "block_boundary_position", return_value=(0, 3, 1)),
+              patch.object(manager, "select_question")):
+            manager.move_before("B", "A", on_progress=lambda _msg: observed.append(fields.copy()))
+        self.assertEqual(observed, [original, original, list(reversed(original))])
+
+    def test_second_incorrect_native_transfer_stops_without_writing_the_original(self):
+        native = Mock()
+        manager = Mock()
+        manager.ordered_question_ids.return_value = ("A", "B")
+        manager.control_inventory.return_value = ({}, {})
+        with (tempfile.TemporaryDirectory() as directory,
+              patch("app.hwp.transaction.QuestionFieldManager", return_value=manager),
+              patch("app.hwp.transaction.apply_permutation",
+                    side_effect=QuestionTransferMismatch("unexpected native block")) as transfer):
+            root = Path(directory)
+            doc = root / "exam.hwp"
+            doc.write_bytes(b"original")
+            with self.assertRaises(QuestionTransferMismatch):
+                apply_reorder_transaction(native, doc, ("B", "A"), (), numbering_style=None,
+                                          backup_dir=root / "backup", work_dir=root)
+            self.assertEqual(transfer.call_count, 2)
+            self.assertEqual(native.open.call_args_list[0], native.open.call_args_list[1])
+            self.assertEqual(doc.read_bytes(), b"original")
+            native.save_exam_copy.assert_not_called()
+
     def test_cut_uses_new_field_location_only_if_the_paragraph_still_starts_with_it(self):
         native = Mock()
         manager = QuestionFieldManager(native)

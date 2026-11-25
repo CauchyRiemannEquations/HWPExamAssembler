@@ -26,8 +26,8 @@ GROUP_OBJECTIVE_LABEL = re.compile(
 )
 
 
-class MissingPastedQuestion(HwpAutomationError):
-    """The ordered fields still describe the cut document after native Paste."""
+class QuestionTransferMismatch(HwpAutomationError):
+    """Native Cut/Paste produced a different question block in the working copy."""
 
 
 def group_objective_label_replacement(
@@ -487,37 +487,25 @@ class QuestionFieldManager:
                 f"actual={selected_fields!r}, expected={expected_fields!r}"
             )
         selected_text = self.hwp.selected_plain_text()
-        self.hwp.cut_selection()
-        self.invalidate_cache()
         if on_progress is not None:
             on_progress(f"{question_id} 문항 잘라내기")
-
+        # A new list gesture can cancel at a progress callback. Finish the
+        # entire clipboard transfer before allowing it to discard this tab.
+        cut_order = tuple(qid for qid in order_before if qid != question_id)
+        self.hwp.cut_selection()
+        if self._order_after_transfer(order_before) != cut_order:
+            raise QuestionTransferMismatch(f"{question_id} 문항만 잘라냈는지 확인할 수 없습니다.")
         destination_position = self._destination_after_cut(destination_field, starts_paragraph)
         self.hwp.set_position(destination_position)
         self.hwp.paste()
-        self.invalidate_cache()
+        self.hwp.visual_step(step_delay)
+        order_after = self._order_after_transfer(cut_order)
+        expected_order = list(cut_order)
+        expected_order.insert(insertion_index, question_id)
+        if order_after != tuple(expected_order):
+            raise QuestionTransferMismatch(f"{question_id} 문항을 붙여넣은 뒤 순서가 요청과 다릅니다.")
         if on_progress is not None:
             on_progress(f"{question_id} → {destination_id + ' 앞' if destination_id else '마지막'}에 붙여넣기")
-        self.hwp.visual_step(step_delay)
-        order_after = self.ordered_question_ids()
-        expected_order = list(order_before)
-        expected_order.remove(question_id)
-        cut_order = tuple(expected_order)
-        expected_order.insert(insertion_index, question_id)
-        deadline = time.monotonic() + 1.5
-        while order_after == cut_order and time.monotonic() < deadline:
-            # Hangul can publish the pasted field after Run("Paste") returns.
-            time.sleep(0.035)
-            pythoncom.PumpWaitingMessages()
-            self.invalidate_cache()
-            order_after = self.ordered_question_ids()
-        if order_after == cut_order:
-            raise MissingPastedQuestion(f"{question_id} 문항을 붙여넣은 결과가 한글에 나타나지 않았습니다.")
-        if order_after != tuple(expected_order):
-            raise HwpAutomationError(
-                f"Unexpected order after move: {order_after!r}; "
-                f"expected={tuple(expected_order)!r}"
-            )
         return MoveAudit(
             question_id=question_id,
             destination_id=destination_id if destination_id is not None else TERMINAL_FIELD,
@@ -526,6 +514,18 @@ class QuestionFieldManager:
             selected_fields=selected_fields,
             selected_text_length=len(selected_text),
         )
+
+    def _order_after_transfer(self, previous: tuple[str, ...]) -> tuple[str, ...]:
+        # Hancom can update GetFieldList after the clipboard action returns.
+        self.invalidate_cache()
+        order = self.ordered_question_ids()
+        deadline = time.monotonic() + 1.5
+        while order == previous and time.monotonic() < deadline:
+            time.sleep(0.035)
+            pythoncom.PumpWaitingMessages()
+            self.invalidate_cache()
+            order = self.ordered_question_ids()
+        return order
 
     def _destination_after_cut(self, field: str, starts_paragraph: bool) -> tuple[int, int, int]:
         if starts_paragraph:
